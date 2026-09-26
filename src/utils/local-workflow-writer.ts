@@ -34,6 +34,7 @@ import {
 import { parseChineseWordTarget, resolveRunOutlineUi, resolveRunSettingUi } from '@/utils/local-workflow-book'
 import { runChapterFixRewrite, selectFixableIssues } from '@/utils/quality-fixer'
 import { describeChapterConstraints } from '@/utils/quality-rules'
+import { resolveGateThirdMode } from '@/utils/self-check-mode'
 import { buildRevealedSettingBrief } from '@/utils/setting-reveal'
 import { countWords } from '@/utils/word-count'
 import { promptTemperature } from '@/storage/local-prompts'
@@ -538,16 +539,36 @@ const withCriticNote = (notice: WorkflowQualityNotice, note: string): WorkflowQu
   },
 })
 
-/** 全书是否已经有过自动修复：没有过就只试跑一次，让作者先看清机制会把正文改成什么样 */
-const hasAnyFixApplied = (orderedChapters: LocalChapter[]) =>
+/**
+ * 全书有没有过改稿记录，用来判「fix 档的首次」。
+ *
+ * ⚠️ 记录必须在**试跑时**就落（applied:false）。原先只在真正落盘那一支里写，
+ * 而试跑判据又依赖这条记录，于是试跑永远不产生记录、下一章又判首次——
+ * 自动改稿被自己锁死在试跑态。这就是本轮修掉的死锁。
+ */
+const hasFixRecord = (orderedChapters: LocalChapter[]) =>
   orderedChapters.some(chapter => Boolean((chapter.planMeta || {}).qualityFix))
 
 /**
- * 闸三 + 自动修复，在规则质检之后调用。
+ * fix 档这一章要不要只试跑（不改正文）。
  *
- * 流程：AI 评审出问题清单 → 挑出带施工单的 P0/P1 → 一次性定向改写 → 存快照 → 落库 → 重跑规则轨。
- * 三处刻意的保守设计：① 首次修复只试跑不动正文；② 改写后字数漂移过大直接放弃；
- * ③ 任何一步失败都退回原状并在通知里说明——自动化不能以"悄悄改坏"为代价。
+ * 抽成纯函数是为了可测：这段逻辑一旦退回"只在落盘时写记录"，自动改稿就会被
+ * 永远锁死在试跑态，而在真实运行时验证这件事得跑完一整章。
+ */
+export const shouldPreviewFix = (params: {
+  config: JsonRecord | null | undefined
+  orderedChapters: LocalChapter[]
+}): boolean =>
+  (params.config || {}).autoFix === 'dry' || !hasFixRecord(params.orderedChapters)
+
+/**
+ * 闸三 + 自动修复，在规则质检之后调用。跑成什么样由 run.config.selfCheckMode 决定
+ * （见 utils/self-check-mode.ts）：off 不发调用 / review 只评审 / fix 评审后改稿。
+ *
+ * fix 档的流程：AI 评审出问题清单 → 挑出带施工单的 P0/P1 → 一次性定向改写 →
+ * 存快照 → 落库 → 重跑规则轨。三处刻意的保守设计：① 首次修复只试跑不动正文；
+ * ② 改写后字数漂移过大直接放弃；③ 任何一步失败都退回原状并在通知里说明——
+ * 自动化不能以"悄悄改坏"为代价。
  */
 const runCriticAndAutoFix = async (params: {
   run: LocalWorkflowRun
@@ -562,7 +583,8 @@ const runCriticAndAutoFix = async (params: {
   orderedChapters: LocalChapter[]
 }): Promise<{ notice: WorkflowQualityNotice; text: string }> => {
   const config = (params.run.config || {}) as JsonRecord
-  if (config.criticEnabled === false) return { notice: params.notice, text: params.text }
+  const mode = resolveGateThirdMode(config)
+  if (mode === 'off') return { notice: params.notice, text: params.text }
 
   const chapterNo = Number(params.chapter.sortNo || 0)
   // 审核用「审核模型」、改稿用「写作模型」——挑错与写好的最优模型不是同一个
@@ -576,9 +598,16 @@ const runCriticAndAutoFix = async (params: {
   })
   const notice = mergeCriticReport(params.notice, report)
 
+  // 档二「只评审不改稿」：评审意见原样交给作者，不生成施工单、也不发改写调用。
+  // 加档位之前这一档会照发一次改写调用再把结果丢掉——每章白烧一次写作模型额度。
+  if (mode !== 'fix') return { notice, text: params.text }
+
   if (!selectFixableIssues(notice.issues).length) return { notice, text: params.text }
 
-  const dryRun = config.autoFix === false || config.autoFix === 'dry' || !hasAnyFixApplied(params.orderedChapters)
+  // fix 档也先试跑一次：作者得先看清机制会把正文改成什么样，才敢让它自动落盘。
+  const dryRun = shouldPreviewFix({ config, orderedChapters: params.orderedChapters })
+  // 只有"首次试跑"要落记录；「dry」是长期档位，不落记录，从 dry 切回 fix 时仍给一次预览
+  const firstPreview = dryRun && config.autoFix !== 'dry'
   const fix = await runChapterFixRewrite({
     modelCode: params.modelCode,
     materials: params.materials,
@@ -591,6 +620,17 @@ const runCriticAndAutoFix = async (params: {
 
   const diffNote = `按施工单改 ${fix.orderCount} 项：保留段落 ${fix.diff.keptParagraphs} 个、改写 ${fix.diff.removedParagraphs} 个，字数 ${fix.diff.beforeWords}→${fix.diff.afterWords}`
   if (dryRun) {
+    // 首次试跑必须落一条 applied:false 的记录。不落，下一章还会判首次，
+    // 自动改稿就永远停在试跑——这正是原先那个死锁的另一半。
+    if (firstPreview) {
+      await stampChapterFixLog(params.chapter.id, {
+        at: new Date().toISOString(),
+        applied: false,
+        orders: fix.orderCount,
+        beforeWords: fix.diff.beforeWords,
+        afterWords: fix.diff.afterWords,
+      })
+    }
     const samples = fix.diff.changedSamples.map(sample => `「${sample}」`).join('、')
     return {
       notice: withCriticNote(
@@ -619,6 +659,7 @@ const runCriticAndAutoFix = async (params: {
     await writeChapterLedger(params.chapter.id, fix.text)
     await stampChapterFixLog(params.chapter.id, {
       at: new Date().toISOString(),
+      applied: true,
       orders: fix.orderCount,
       beforeWords: fix.diff.beforeWords,
       afterWords: fix.diff.afterWords,

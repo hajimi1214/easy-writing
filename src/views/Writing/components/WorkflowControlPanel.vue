@@ -46,6 +46,10 @@
           <p v-if="qualityNotice.critic?.status === 'unavailable'" class="workflow-review-unavailable">
             正文完整性检查已完成，内容审稿本次未完成；正文仍已保存，可正常查看和编辑。
           </p>
+          <div v-if="criticScores.length" class="workflow-review-scores">
+            <span v-for="score in criticScores" :key="score.label">{{ score.label }} {{ score.value }}</span>
+          </div>
+          <p v-if="criticNote" class="workflow-review-critic-note">{{ criticNote }}</p>
           <section
             v-for="group in reviewGroups"
             :key="group.key"
@@ -565,6 +569,26 @@ const criticStatusLabel = computed(() => {
   if (status === 'unavailable') return '未完成'
   return '未记录'
 })
+
+/** 十维度评分（键名就是中文维度名，直接用） */
+const criticScores = computed(() =>
+  Object.entries(qualityNotice.value?.critic?.scores || {}).map(([label, value]) => ({
+    label,
+    value: Number(value),
+  }))
+)
+
+/**
+ * 评审备注：总评一句话、改稿的试跑说明或失败原因。
+ *
+ * 引擎把这些写进 critic.error，原先整个界面没有任何地方渲染——于是 fix 档
+ * 「首次只试跑、告诉你动了哪些地方」的价值等于没兑现：作者什么都看不到。
+ * status 为 unavailable 时走上面那条固定提示，这里不重复。
+ */
+const criticNote = computed(() => {
+  if (qualityNotice.value?.critic?.status === 'unavailable') return ''
+  return String(qualityNotice.value?.critic?.error || '').trim()
+})
 const issueDimensionLabels: Record<string, string> = {
   integrity: '正文完整性',
   content: '正文内容',
@@ -922,6 +946,33 @@ watch(
   background: var(--state-warning-surface);
   font-size: 12px;
   line-height: 1.6;
+}
+
+.workflow-review-scores {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 8px;
+  margin-bottom: 10px;
+
+  span {
+    padding: 2px 8px;
+    border-radius: 999px;
+    color: var(--ink-sec);
+    background: var(--selection-bg-color);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+}
+
+.workflow-review-critic-note {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  color: var(--ink-sec);
+  background: var(--selection-bg-color);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-line;
 }
 
 .workflow-review-group {

@@ -65,6 +65,11 @@ export interface WorkflowRuntimeSettings {
   writingStyle?: string;
   /** 用户硬性写作规则：优先级高于系统写作建议（输出格式与内容安全底线除外），下一章起生效 */
   writingRules?: string;
+  /**
+   * 自检闸三（AI 评审 + 施工单自动改稿）档位：'off' / 'review'（默认）/ 'fix'。
+   * 判定见 utils/self-check-mode.ts；闸一（规则轨）与闸二（事实账本）始终开启，不受影响。
+   */
+  selfCheckMode?: string;
 }
 
 export interface WorkflowQualityIssue {

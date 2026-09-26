@@ -127,6 +127,35 @@
             </el-form-item>
           </el-form>
         </section>
+
+        <section class="rail-form-section">
+          <div class="rail-form-section-title">
+            <strong>AI 自检与改稿</strong>
+            <span>规则轨（闸一）与事实账本（闸二）始终开启，这里单独管 AI 评审（闸三）怎么跑。</span>
+          </div>
+
+          <el-form label-position="left" label-width="68px" class="rail-form-grid rail-form-inline">
+            <el-form-item label="评审档位">
+              <el-select
+                v-model="draft.selfCheckMode"
+                class="ink-select"
+                popper-class="ink-select-popper"
+                placeholder="选择评审档位"
+                fit-input-width
+                :disabled="formDisabled"
+              >
+                <el-option
+                  v-for="option in GATE_THIRD_MODE_OPTIONS"
+                  :key="option.value"
+                  :label="option.label"
+                  :value="option.value"
+                />
+              </el-select>
+            </el-form-item>
+          </el-form>
+
+          <p class="rail-self-check-hint">{{ selfCheckHint }}</p>
+        </section>
       </template>
     </div>
 
@@ -158,6 +187,7 @@
 <script setup lang="ts">
 import { computed, onMounted, toRef } from 'vue'
 import type { WorkflowRun, WorkflowRuntimeSettings } from '@/types/workflow'
+import { GATE_THIRD_MODE_OPTIONS, resolveGateThirdMode } from '@/utils/self-check-mode'
 import type { WorkflowRuntimeConfigUpdate } from './rail'
 import {
   createRunConfigReader,
@@ -174,6 +204,7 @@ interface RulesDraft extends Record<string, string> {
   writingStyle: string
   narrativeStyle: string
   storyPerspective: string
+  selfCheckMode: string
 }
 
 const props = withDefaults(defineProps<{
@@ -198,13 +229,21 @@ const presetNarrativeStyleOptions = [
 const buildDraft = (run: WorkflowRun | null): RulesDraft => {
   const reader = createRunConfigReader(run)
   if (!reader) {
-    return { writingRules: '', writingStyle: '', narrativeStyle: '', storyPerspective: '' }
+    return {
+      writingRules: '',
+      writingStyle: '',
+      narrativeStyle: '',
+      storyPerspective: '',
+      selfCheckMode: resolveGateThirdMode(null),
+    }
   }
   return {
     writingRules: reader.readConfigText('writingRules'),
     writingStyle: reader.readConfigText('writingStyle'),
     narrativeStyle: reader.readConfigText('narrativeStyle', reader.tags.join('、')),
     storyPerspective: reader.readConfigText('storyPerspective'),
+    // 走与引擎同一份判定函数：旧数据只有 criticEnabled / autoFix 也能显示出真实档位
+    selfCheckMode: resolveGateThirdMode(reader.rawConfig),
   }
 }
 
@@ -229,6 +268,17 @@ const storyPerspectiveOptions = computed(() =>
   resources.value?.selectFields.find(field => field.key === 'storyPerspective')?.options || []
 )
 
+/** 档位说明要写清代价：三档的差别就是「多花一次调用」和「改不改正文」，得让人一眼看懂 */
+const selfCheckHint = computed(() => {
+  if (draft.selfCheckMode === 'fix') {
+    return '评审出的问题会自动改写正文：首次先试跑一次给你看改动，之后每章自动改（改前存快照，字数漂移过大就放弃）。'
+  }
+  if (draft.selfCheckMode === 'off') {
+    return '完全不跑 AI 评审，最省额度；闸一规则轨与闸二事实账本照常运行。'
+  }
+  return '每章多一次评审调用，只把问题清单挑出来交给你判断，绝不改动正文。'
+})
+
 const applyChanges = () => {
   if (!props.run || props.saving || !changedCount.value) return
   const next: RulesDraft = {
@@ -236,6 +286,8 @@ const applyChanges = () => {
     writingStyle: draft.writingStyle.trim().slice(0, WRITING_STYLE_MAX_LEN),
     narrativeStyle: draft.narrativeStyle.trim(),
     storyPerspective: draft.storyPerspective.trim(),
+    // 过一遍判定函数：脏值不会写进配置
+    selfCheckMode: resolveGateThirdMode({ selfCheckMode: draft.selfCheckMode }),
   }
   // 补丁语义：只提交真实变化字段，避免覆盖其他面板的待生效配置
   const config = buildPatch(next) as Partial<WorkflowRuntimeSettings>
@@ -251,5 +303,13 @@ onMounted(loadResources)
 
 .rules-textarea {
   min-height: 128px;
+}
+
+/* 档位说明随选择切换，紧贴表单项读起来才是同一段 */
+.rail-self-check-hint {
+  margin: 0;
+  color: var(--ink-sec);
+  font-size: 11px;
+  line-height: 1.62;
 }
 </style>

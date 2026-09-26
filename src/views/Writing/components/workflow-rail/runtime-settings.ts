@@ -113,6 +113,8 @@ export const buildInitialStoryLine = (setting: WorkflowSettingResult) => {
 }
 
 export interface WorkflowRunConfigReader {
+  /** 当前配置与待生效补丁合并后的完整键值（读自检档位这类非字符串字段时用） */
+  rawConfig: Record<string, unknown>
   /** 当前配置与待生效补丁合并后的键值读取（延后生效字段优先） */
   readConfigText: (key: keyof WorkflowRuntimeSettings, fallback?: string) => string
   /** 运行时叙事标签（旧数据 narrativeStyle 的回退来源） */
@@ -142,6 +144,7 @@ export const createRunConfigReader = (run: WorkflowRun | null): WorkflowRunConfi
     ? readText(pending.modelCode)
     : currentModelCode
   return {
+    rawConfig: config,
     readConfigText: (key, fallback = '') =>
       Object.prototype.hasOwnProperty.call(config, key) ? readText(config[key]) : fallback,
     tags: readTextList(config.tags),
