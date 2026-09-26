@@ -286,7 +286,8 @@ export const requestLocalChatCompletion = async (options: {
     // 重试判据 RETRIABLE_UPSTREAM 声明在文件末尾，非流式与流式共用同一份
     let lastParseError: Error | null = null
     let content = ''
-    let body: any = null
+    // 只用得到 usage 的两个计数，给它一个具体形状，避免 any 漏进类型系统
+    let body: { usage?: { prompt_tokens?: number; completion_tokens?: number } } | null = null
     const MAX_ATTEMPTS = 3
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       if (attempt > 0) {

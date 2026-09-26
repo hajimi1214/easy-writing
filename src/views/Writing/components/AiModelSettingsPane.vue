@@ -269,6 +269,40 @@
           </el-select>
         </label>
         <label class="field">
+          <span>审核模型</span>
+          <el-select v-model="reviewModelValue" size="small" class="model-select" popper-class="ai-model-select-popper">
+            <template #prefix>
+              <span class="model-select-prefix">
+                <img v-if="getSelectedModelIcon('workflow_review')" :src="getSelectedModelIcon('workflow_review')" alt="" />
+                <i v-else class="fa-solid fa-clipboard-check"></i>
+              </span>
+            </template>
+            <el-option label="跟随写作模型" value="">
+              <span class="model-select-option">
+                <span class="model-option-icon"><i class="fa-solid fa-clipboard-check"></i></span>
+                <span>跟随写作模型</span>
+              </span>
+            </el-option>
+            <el-option
+              v-for="model in aiModelStore.reviewModels"
+              :key="model.code"
+              :label="getModelOptionLabel(model)"
+              :value="model.code"
+            >
+              <span class="model-select-option">
+                <span class="model-option-icon">
+                  <img v-if="getModelProviderIcon(model)" :src="getModelProviderIcon(model)" alt="" />
+                  <i v-else class="fa-solid fa-cube"></i>
+                </span>
+                <span class="model-option-copy">
+                  <span class="model-option-name">{{ getModelOptionLabel(model) }}</span>
+                  <span v-if="model.description" class="model-option-desc">{{ model.description }}</span>
+                </span>
+              </span>
+            </el-option>
+          </el-select>
+        </label>
+        <label class="field">
           <span>图像生成</span>
           <el-select v-model="imageModelValue" size="small" class="model-select" popper-class="ai-model-select-popper">
             <template #prefix>
@@ -303,6 +337,7 @@
           </el-select>
         </label>
       </div>
+      <p class="grid-tip">审核模型用于闸三 AI 评审（挑错），写作模型用于生成与改稿；留空即跟随写作模型。</p>
     </section>
 
     <section class="model-card list-card">
@@ -488,6 +523,13 @@ const workflowModelValue = computed({
   get: () => aiModelStore.workflowModel,
   set: value => {
     void aiModelStore.setWorkflowModel(String(value || ''))
+  },
+})
+
+const reviewModelValue = computed({
+  get: () => aiModelStore.reviewModel,
+  set: value => {
+    void aiModelStore.setReviewModel(String(value || ''))
   },
 })
 
@@ -830,7 +872,9 @@ const getSelectedModel = (groupCode: AiModelGroupCode) => {
     ? aiModelStore.textModel
     : groupCode === 'workflow_book'
       ? aiModelStore.workflowModel
-      : aiModelStore.imageModel
+      : groupCode === 'workflow_review'
+        ? aiModelStore.reviewModel
+        : aiModelStore.imageModel
   const models = aiModelStore.groups[groupCode]?.models || []
   return models.find(item => item.code === selectedCode) || aiModelStore.groups[groupCode]?.defaultModel || null
 }
@@ -1041,7 +1085,14 @@ const getTestClass = (status?: number) => {
 }
 
 .default-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(196px, 1fr));
+}
+
+.grid-tip {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--settings-muted-color, var(--ink-sec));
 }
 
 .model-select {

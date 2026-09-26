@@ -30,14 +30,17 @@ export const useAiModelStore = defineStore('ai-model', () => {
 
   const textModel = ref('')
   const workflowModel = ref('')
+  const reviewModel = ref('')
   const imageModel = ref('')
 
   const textModels = computed(() => groups.value.text_assist?.models || [])
   const workflowModels = computed(() => groups.value.workflow_book?.models || [])
+  const reviewModels = computed(() => groups.value.workflow_review?.models || [])
   const imageModels = computed(() => groups.value.image_generation?.models || [])
 
   const textSelectOptions = computed(() => toSelectOptions(textModels.value))
   const workflowSelectOptions = computed(() => toSelectOptions(workflowModels.value))
+  const reviewSelectOptions = computed(() => toSelectOptions(reviewModels.value))
   const imageSelectOptions = computed(() => toSelectOptions(imageModels.value))
 
   const normalizeSelectedModel = (groupCode: AiModelGroupCode, value: string) => {
@@ -51,6 +54,7 @@ export const useAiModelStore = defineStore('ai-model', () => {
     const modelCode = normalizeSelectedModel(groupCode, value)
     if (groupCode === 'text_assist') textModel.value = modelCode
     if (groupCode === 'workflow_book') workflowModel.value = modelCode
+    if (groupCode === 'workflow_review') reviewModel.value = modelCode
     if (groupCode === 'image_generation') imageModel.value = modelCode
   }
 
@@ -63,6 +67,7 @@ export const useAiModelStore = defineStore('ai-model', () => {
 
   const setTextModel = (value: string) => setGroupModel('text_assist', value)
   const setWorkflowModel = (value: string) => setGroupModel('workflow_book', value)
+  const setReviewModel = (value: string) => setGroupModel('workflow_review', value)
   const setImageModel = (value: string) => setGroupModel('image_generation', value)
 
   const loadGroup = async (groupCode: AiModelGroupCode, force = false) => {
@@ -98,9 +103,20 @@ export const useAiModelStore = defineStore('ai-model', () => {
     return fallback ? fallback.code : ""
   }
   const loadWorkflowModels = (force = false) => loadGroup('workflow_book', force)
+  const loadReviewModels = (force = false) => loadGroup('workflow_review', force)
   const loadImageModels = (force = false) => loadGroup('image_generation', force)
+  /** 闸三审核模型：未单独配置时返回空串，由调用方回落写作模型 */
+  const ensureReviewModel = async (): Promise<string> => {
+    if (!reviewModel.value) await loadGroup('workflow_review')
+    return reviewModel.value
+  }
   const loadAll = async (force = false) => {
-    await Promise.all([loadTextModels(force), loadWorkflowModels(force), loadImageModels(force)])
+    await Promise.all([
+      loadTextModels(force),
+      loadWorkflowModels(force),
+      loadReviewModels(force),
+      loadImageModels(force),
+    ])
   }
 
   return {
@@ -109,20 +125,26 @@ export const useAiModelStore = defineStore('ai-model', () => {
     loaded,
     textModel,
     workflowModel,
+    reviewModel,
     imageModel,
     textModels,
     workflowModels,
+    reviewModels,
     imageModels,
     textSelectOptions,
     workflowSelectOptions,
+    reviewSelectOptions,
     imageSelectOptions,
     setTextModel,
     setWorkflowModel,
+    setReviewModel,
     setImageModel,
     loadGroup,
     loadTextModels,
     ensureTextModel,
     loadWorkflowModels,
+    loadReviewModels,
+    ensureReviewModel,
     loadImageModels,
     loadAll,
   }

@@ -138,6 +138,21 @@ export const resolveWorkflowModelCode = async (run: LocalWorkflowRun) => {
   return code
 }
 
+/**
+ * 审核模型（闸三 AI 评审）与写作模型分开选。
+ *
+ * 实测同一批模型里这两件事的最优解不是同一个：直答型模型文笔够用，
+ * 却连「铜钱共十一枚」这种算术硬伤一条都挑不出；思考型模型挑得准，写起来又慢又贵。
+ * 未单独配置时回落写作模型，保持升级前的行为不变。
+ */
+export const resolveReviewModelCode = async (run: LocalWorkflowRun) => {
+  const explicit = asText(run.config?.reviewModelCode)
+  if (explicit) return explicit
+  const preferred = await useAiModelStore().ensureReviewModel()
+  if (preferred) return preferred
+  return resolveWorkflowModelCode(run)
+}
+
 const resolveChapterTargetWords = (run: LocalWorkflowRun) =>
   parseChineseWordTarget(run.config?.chapterTargetWords) || DEFAULT_CHAPTER_WORDS
 
@@ -550,8 +565,10 @@ const runCriticAndAutoFix = async (params: {
   if (config.criticEnabled === false) return { notice: params.notice, text: params.text }
 
   const chapterNo = Number(params.chapter.sortNo || 0)
+  // 审核用「审核模型」、改稿用「写作模型」——挑错与写好的最优模型不是同一个
+  const reviewModelCode = await resolveReviewModelCode(params.run)
   const report = await runChapterCritic({
-    modelCode: params.modelCode,
+    modelCode: reviewModelCode,
     chapterNo,
     chapterTitle: params.chapter.title,
     chapterText: params.text,

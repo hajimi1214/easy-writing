@@ -1,5 +1,5 @@
 
-export type AiModelGroupCode = 'text_assist' | 'workflow_book' | 'image_generation'
+export type AiModelGroupCode = 'text_assist' | 'workflow_book' | 'workflow_review' | 'image_generation'
 
 export interface AiModelOption {
   id: number

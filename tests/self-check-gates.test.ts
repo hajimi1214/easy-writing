@@ -4,7 +4,8 @@
  * 规则数据在 src/config/quality-rules/*.json，改规则后跑 `pnpm test` 即可确认
  * 「生成前注入的约束」与「生成后体检的判定」仍然自洽。
  */
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia'
 import {
   describeChapterConstraints,
   getActiveBans,
@@ -27,6 +28,10 @@ import {
 } from '@/utils/quality-fixer'
 import type { LocalChapter } from '@/storage/local-library-types'
 import type { WorkflowQualityIssue } from '@/types/workflow'
+import { useAiModelStore } from '@/stores/ai-model'
+import { saveLocalAiModel, sceneOfGroup } from '@/storage/local-ai-models'
+import { resolveReviewModelCode } from '@/utils/local-workflow-writer'
+import type { LocalWorkflowRun } from '@/storage/local-workflow'
 
 const filler = '他走进院子，脚步很轻。'.repeat(140) // 1540 个中文字，跨过字数下限
 
@@ -592,5 +597,70 @@ describe('闸二 · 可数物件账本与数量平衡校验', () => {
       currentChapterNo: 2,
     })
     expect(materials['可数物件账本（写数量时必须对上）']).toContain('磨字铜钱：截至上一章共 1枚')
+  })
+})
+describe('闸三 · 审核模型槽位', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    setActivePinia(createPinia())
+  })
+
+  const seedTextModel = (name: string, modelCode: string) =>
+    saveLocalAiModel({
+      name,
+      scene: 'text',
+      provider: 'openai-compatible',
+      protocol: 'openai_compatible',
+      modelCode,
+      baseUrl: 'http://127.0.0.1:9000/v1',
+      maxContext: 128000,
+      maxOutputTokens: 8192,
+      status: 1,
+    })
+
+  it('审核分组复用文本模型库，不是生图库', () => {
+    expect(sceneOfGroup('workflow_review')).toBe('text')
+  })
+
+  it('写作槽位与审核槽位各自独立记忆：同一个模型池里挑两个不同的模型', async () => {
+    const writer = await seedTextModel('写作-直答型', 'deepseek-v4-pro')
+    const reviewer = await seedTextModel('审核-思考型', 'qwen3.8-max')
+    const store = useAiModelStore()
+    await store.loadWorkflowModels(true)
+    await store.loadReviewModels(true)
+    // 两个槽位共用同一份文本模型清单，都能选到池子里的模型
+    expect(store.workflowModels.map(item => item.code)).toContain(writer.data.code)
+    expect(store.reviewModels.map(item => item.code)).toContain(reviewer.data.code)
+
+    await store.setWorkflowModel(writer.data.code)
+    await store.setReviewModel(reviewer.data.code)
+    expect(store.workflowModel).toBe(writer.data.code)
+    expect(store.reviewModel).toBe(reviewer.data.code)
+
+    // 重新加载后仍各自保持：偏好分键落库，两个槽位不会互相覆盖
+    await store.loadWorkflowModels(true)
+    await store.loadReviewModels(true)
+    expect(store.workflowModel).toBe(writer.data.code)
+    expect(store.reviewModel).toBe(reviewer.data.code)
+  })
+
+  it('审核槽位留空时回落写作模型，升级前的行为不变', async () => {
+    const writer = await seedTextModel('写作-直答型', 'deepseek-v4-pro')
+    const store = useAiModelStore()
+    await store.loadTextModels(true)
+    await store.loadWorkflowModels(true)
+    await store.loadReviewModels(true)
+    await store.setTextModel(writer.data.code)
+    await store.setWorkflowModel(writer.data.code)
+    await store.setReviewModel('') // 用户在界面上选「跟随写作模型」
+
+    expect(store.reviewModel).toBe('')
+    const code = await resolveReviewModelCode({ config: {} } as unknown as LocalWorkflowRun)
+    expect(code).toBe(writer.data.code)
+  })
+
+  it('运行配置里显式指定的审核模型优先级最高', async () => {
+    const run = { config: { reviewModelCode: 'qwen3.8-max' } } as unknown as LocalWorkflowRun
+    await expect(resolveReviewModelCode(run)).resolves.toBe('qwen3.8-max')
   })
 })
