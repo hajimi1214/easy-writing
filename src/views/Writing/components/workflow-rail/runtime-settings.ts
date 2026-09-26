@@ -77,6 +77,8 @@ export const buildInitialCoreSetting = (setting: WorkflowSettingResult) => {
     ability.intro.trim(),
     formatCoreItem(ability.innate),
     formatCoreItem(ability.acquired),
+    formatCoreItem(ability.bodyMemory),
+    formatCoreItem(ability.sealArt),
     ability.dimensions.map(dimension => dimension.trim()).filter(Boolean).join('、'),
   ].filter(Boolean).join('；')
   if (abilityContent) lines.push(`能力规则：${abilityContent}`)

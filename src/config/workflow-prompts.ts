@@ -130,6 +130,54 @@ export const buildParagraphPolishMessages = (params: {
   },
 ]
 
+/**
+ * 闸三·AI 评审：审查用的素材与写正文时**完全同一份**。
+ * 审查者若拿不到设定与红线，只能凭常识挑刺，那挑出来的都是一眼能看出的废话。
+ */
+export const buildChapterCriticMessages = (params: {
+  materials: Record<string, string>
+  chapterText: string
+}): LocalChatMessageInput[] => [
+  {
+    role: 'system',
+    content: [
+      promptText('workflow-writer', 'criticSystem'),
+      renderPromptText('workflow-writer', 'jsonSystem', {
+        JSON形状: promptText('workflow-writer', 'criticShape'),
+        补充要求: 'scores 与 issues 两个字段都必须给出；本章确实没问题时 issues 返回空数组。',
+      }),
+    ].join('\n\n'),
+  },
+  {
+    role: 'user',
+    content: [
+      materialBlock(params.materials),
+      ['【本章正文】', params.chapterText].join('\n'),
+      `【任务】${promptText('workflow-writer', 'criticTask')}`,
+    ].join('\n\n'),
+  },
+]
+
+/** 闸三·自动修复：拿着施工单做一次性定向改写，只动被指到的地方 */
+export const buildChapterFixMessages = (params: {
+  materials: Record<string, string>
+  chapterText: string
+  order: string
+}): LocalChatMessageInput[] => [
+  {
+    role: 'system',
+    content: promptText('workflow-writer', 'fixSystem'),
+  },
+  {
+    role: 'user',
+    content: [
+      materialBlock(params.materials),
+      renderPromptText('workflow-writer', 'fixNote', { 施工单: params.order }),
+      ['【待修改正文】', params.chapterText].join('\n'),
+    ].join('\n\n'),
+  },
+]
+
 /** 大纲"按要求调整"：输出与当前大纲同构的完整 JSON */
 export const buildOutlineAdjustMessages = (params: {
   materials: Record<string, string>

@@ -125,7 +125,7 @@ import type { WorkflowSettingCore } from '../../types'
 const props = defineProps<{ core: WorkflowSettingCore }>()
 const emit = defineEmits<{ (event: 'update', core: WorkflowSettingCore): void }>()
 
-const abilityKeys = ['innate', 'acquired'] as const
+const abilityKeys = ['innate', 'acquired', 'bodyMemory', 'sealArt'] as const
 
 const patchCore = (payload: Partial<WorkflowSettingCore>) => {
   emit('update', { ...props.core, ...payload })

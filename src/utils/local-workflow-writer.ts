@@ -1,5 +1,5 @@
 import type { JsonRecord } from '@/types/json'
-import type { WorkflowTask } from '@/types/workflow'
+import type { WorkflowQualityNotice, WorkflowTask } from '@/types/workflow'
 import {
   buildChapterBeatsMessages,
   buildChapterContentMessages,
@@ -16,7 +16,9 @@ import {
 } from '@/storage/local-workflow'
 import { getWritingStorage } from '@/storage'
 import { useAiModelStore } from '@/stores/ai-model'
+import { mergeCriticReport, runChapterCritic } from '@/utils/ai-critic'
 import { parseAiJson } from '@/utils/ai-json'
+import { buildLedgerMaterials, writeChapterLedger } from '@/utils/fact-ledger'
 import {
   NO_MODEL_MESSAGE,
   requestLocalChatCompletion,
@@ -30,6 +32,9 @@ import {
   unregisterLiveLocalTask,
 } from '@/utils/local-workflow-runtime'
 import { parseChineseWordTarget, resolveRunOutlineUi, resolveRunSettingUi } from '@/utils/local-workflow-book'
+import { runChapterFixRewrite, selectFixableIssues } from '@/utils/quality-fixer'
+import { describeChapterConstraints } from '@/utils/quality-rules'
+import { buildRevealedSettingBrief } from '@/utils/setting-reveal'
 import { countWords } from '@/utils/word-count'
 import { promptTemperature } from '@/storage/local-prompts'
 import { recordAiChapterLanding } from '@/storage/local-write-stats'
@@ -160,30 +165,17 @@ const describeRunConfig = (run: LocalWorkflowRun) => {
     .join('\n')
 }
 
-const describeSettingBrief = (run: LocalWorkflowRun) => {
-  const setting = resolveRunSettingUi(run)
-  const characters = Array.isArray(setting.characters) ? setting.characters : []
-  const characterLines = characters
-    .filter((item: JsonRecord) => asText(item?.name))
-    .slice(0, 8)
-    .map((item: JsonRecord) =>
-      `${asText(item.name)}（${[asText(item.gender), asText(item.identity)].filter(Boolean).join('，')}）：${[asText(item.background), asText(item.motivation)].filter(Boolean).join('；')}`
-    )
-  const core = (setting.core || {}) as JsonRecord
-  const realms = Array.isArray(core.cultivation?.realms) ? core.cultivation.realms : []
-  const powerLine = [asText(core.cultivation?.intro), realms.map((realm: JsonRecord) => asText(realm?.name)).filter(Boolean).join('→')]
-    .filter(Boolean)
-    .join('；境界：')
-  const storylines = Array.isArray(setting.storylines) ? setting.storylines : []
-  const storylineLines = storylines
-    .filter((line: JsonRecord) => asText(line?.title))
-    .map((line: JsonRecord) => `${asText(line.title)}：${asText(line.desc)}`)
-  return {
-    characters: characterLines.join('\n'),
-    power: powerLine,
-    storylines: storylineLines.join('\n'),
-  }
-}
+/**
+ * 设定素材按章过滤之后再注入。
+ *
+ * 这里以前是「原样喂」：seed 是作者视角的完整设定稿，含大量卷次剧透
+ * （「（第七卷才反转点破）」「真相：流白当年留下的守门人」…），
+ * 于是闸一在生成后拦「死生门」，提示词却自己先把「死生门」递到了模型嘴边。
+ * 现在改由 `@/utils/setting-reveal` 统一处理：条目级 revealAtChapter 闸门 +
+ * 片段级作者批注消毒；该模块是纯函数，测试能直接拿真实 seed 断言。
+ */
+const describeSettingBrief = (run: LocalWorkflowRun, chapterNo: number) =>
+  buildRevealedSettingBrief(resolveRunSettingUi(run), chapterNo)
 
 const describeOutlineBrief = (run: LocalWorkflowRun) => {
   const outline = resolveRunOutlineUi(run)
@@ -219,9 +211,11 @@ const buildChapterMaterials = async (params: {
   chapter: LocalChapter
   previousChapter: LocalChapter | null
   nextChapterSummary: string
+  /** 全书按序排好的章：闸二事实账本据此生成"全书进度 / 近期章纲 / 人物出场表" */
+  orderedChapters: LocalChapter[]
 }): Promise<Record<string, string>> => {
   const { run, volume, chapter, previousChapter } = params
-  const brief = describeSettingBrief(run)
+  const brief = describeSettingBrief(run, Number(chapter.sortNo || 0))
   let previousTail = ''
   if (previousChapter) {
     const { text } = await readChapterText(chapter.bookId, previousChapter.id)
@@ -229,14 +223,26 @@ const buildChapterMaterials = async (params: {
   }
   const beats = readBeats(chapter)
   const writingRules = asText(run.config?.writingRules)
+  // 闸二·事实账本：把"前面每一章写过什么"补进上下文。原先只喂上一章结尾 600 字，
+  // 写到第 100 章时第 1–98 章等于不存在——脱节/章节对不上/配角突然出场都由此而来。
+  const ledgerMaterials = await buildLedgerMaterials({
+    orderedChapters: params.orderedChapters,
+    currentChapterNo: Number(chapter.sortNo || 0),
+  })
   return {
     '写作参数': describeRunConfig(run),
     '写作规则（必须遵守，优先级最高）': writingRules,
+    // 闸一·生成前注入：把本卷区间、本章仍生效的剧透红线、篇幅与开篇要求直接写进素材。
+    // 原先素材只喂「作品大纲 = 简介 + 核心钩子」，模型并不知道哪句话现在还不能说破，
+    // 于是"提前抖底牌"只能靠模型自觉——这是越界/剧透反复发生的直接原因。
+    // 同一份规则数据在生成后还会再跑一遍体检（见 local-quality-check.ts）。
+    '本章红线与禁忌（违反即整章作废，优先级最高）': describeChapterConstraints(chapter.sortNo),
     '作品大纲': describeOutlineBrief(run),
     '主要人物': brief.characters,
     '力量体系': brief.power,
     '故事线': brief.storylines,
     '本卷规划': [`卷《${volume.title}》：${asText(volume.summary)}`, describeVolumeStages(volume)].filter(Boolean).join('\n'),
+    ...ledgerMaterials,
     '前情': previousTail,
     '本章章纲': `第${chapter.sortNo}章《${chapter.title}》：${asText(chapter.summary)}`,
     '本章细纲': beats ? [...beats.beats.map((beat, i) => `${i + 1}. ${beat}`), beats.endHook ? `章末钩子：${beats.endHook}` : ''].filter(Boolean).join('\n') : '',
@@ -326,6 +332,9 @@ const planNextChapterBatch = async (
       materials: {
         '写作参数': describeRunConfig(run),
         '作品大纲': describeOutlineBrief(run),
+        // 用本批「起始章」的约束：禁令只随章号递增而失效，起始章的禁令集合是本批的超集，
+        // 按它规划整批不会漏。规划阶段就卡住红线，才不会把剧透写进章纲污染后面所有章。
+        '红线与禁忌（本批各章均须遵守）': describeChapterConstraints(globalStart),
         '本卷规划': [`卷《${volume.title}》：${asText(volume.summary)}`, describeVolumeStages(volume)].filter(Boolean).join('\n'),
         '已有章纲（最近几章）': recentOutlines,
       },
@@ -389,6 +398,7 @@ const ensureChapterBeats = async (
         '写作参数': describeRunConfig(run),
         '本卷规划': [`卷《${volume.title}》：${asText(volume.summary)}`, describeVolumeStages(volume)].filter(Boolean).join('\n'),
         '本章章纲': `第${chapter.sortNo}章《${chapter.title}》：${asText(chapter.summary)}`,
+        '本章红线与禁忌（细纲不得提前说破）': describeChapterConstraints(chapter.sortNo),
       },
     }),
   })
@@ -453,6 +463,182 @@ const streamChapterContent = async (params: {
   )
   if (streamError) throw new Error(streamError)
   return base ? `${base}\n${streamed}` : streamed
+}
+
+// ---------------------------------------------------------------------------
+// 闸三 AI 评审 + 施工单自动修复
+// ---------------------------------------------------------------------------
+
+/** 修复前的手工快照：不走 5 分钟节流，必须有这一版可回退 */
+const snapshotChapterVersion = async (params: {
+  bookId: string
+  chapterId: number
+  title: string
+  text: string
+}) => {
+  const storage = getWritingStorage()
+  await storage.saveChapterVersion({
+    userId: LOCAL_USER_ID,
+    bookId: params.bookId,
+    chapterId: params.chapterId,
+    source: 'local',
+    title: params.title,
+    textContent: plainTextRows(params.text).join('\n'),
+    contentJson: plainTextToDocJson(params.text),
+    remoteVersion: 0,
+    remark: '自动修复前快照',
+    createdAt: Date.now(),
+  })
+  const settings = await storage.getLocalWritingSettings()
+  await storage.pruneChapterVersions(
+    LOCAL_USER_ID,
+    params.bookId,
+    params.chapterId,
+    Number(settings.backupRetention || 20)
+  )
+}
+
+/** 把"这一章被自动改过"记进章节 planMeta，供人工追溯 */
+const stampChapterFixLog = async (chapterId: number, log: JsonRecord) => {
+  try {
+    const storage = getLocalLibraryStorage()
+    const fresh = await storage.getLocalChapterById(chapterId)
+    if (!fresh) return
+    await storage.updateLocalChapter({
+      id: chapterId,
+      // 同 updateLocalChapter 的一贯注意点：planMeta 是整体替换，必须先展开旧的
+      planMeta: { ...(fresh.planMeta || {}), qualityFix: log },
+    })
+  } catch {
+    // 追溯信息写失败不影响正文
+  }
+}
+
+const withCriticNote = (notice: WorkflowQualityNotice, note: string): WorkflowQualityNotice => ({
+  ...notice,
+  critic: {
+    status: notice.critic?.status || 'partial',
+    scores: notice.critic?.scores,
+    error: [note, notice.critic?.error].filter(Boolean).join('\n'),
+  },
+})
+
+/** 全书是否已经有过自动修复：没有过就只试跑一次，让作者先看清机制会把正文改成什么样 */
+const hasAnyFixApplied = (orderedChapters: LocalChapter[]) =>
+  orderedChapters.some(chapter => Boolean((chapter.planMeta || {}).qualityFix))
+
+/**
+ * 闸三 + 自动修复，在规则质检之后调用。
+ *
+ * 流程：AI 评审出问题清单 → 挑出带施工单的 P0/P1 → 一次性定向改写 → 存快照 → 落库 → 重跑规则轨。
+ * 三处刻意的保守设计：① 首次修复只试跑不动正文；② 改写后字数漂移过大直接放弃；
+ * ③ 任何一步失败都退回原状并在通知里说明——自动化不能以"悄悄改坏"为代价。
+ */
+const runCriticAndAutoFix = async (params: {
+  run: LocalWorkflowRun
+  bookId: string
+  chapter: LocalChapter
+  materials: Record<string, string>
+  text: string
+  notice: WorkflowQualityNotice
+  modelCode: string
+  targetWords: number
+  contentVersion: number
+  orderedChapters: LocalChapter[]
+}): Promise<{ notice: WorkflowQualityNotice; text: string }> => {
+  const config = (params.run.config || {}) as JsonRecord
+  if (config.criticEnabled === false) return { notice: params.notice, text: params.text }
+
+  const chapterNo = Number(params.chapter.sortNo || 0)
+  const report = await runChapterCritic({
+    modelCode: params.modelCode,
+    chapterNo,
+    chapterTitle: params.chapter.title,
+    chapterText: params.text,
+    materials: params.materials,
+  })
+  const notice = mergeCriticReport(params.notice, report)
+
+  if (!selectFixableIssues(notice.issues).length) return { notice, text: params.text }
+
+  const dryRun = config.autoFix === false || config.autoFix === 'dry' || !hasAnyFixApplied(params.orderedChapters)
+  const fix = await runChapterFixRewrite({
+    modelCode: params.modelCode,
+    materials: params.materials,
+    chapterText: params.text,
+    issues: notice.issues,
+  })
+  if (!fix.ok || !fix.diff) {
+    return { notice: withCriticNote(notice, `自动修复未执行：${fix.error || '原因未知'}`), text: params.text }
+  }
+
+  const diffNote = `按施工单改 ${fix.orderCount} 项：保留段落 ${fix.diff.keptParagraphs} 个、改写 ${fix.diff.removedParagraphs} 个，字数 ${fix.diff.beforeWords}→${fix.diff.afterWords}`
+  if (dryRun) {
+    const samples = fix.diff.changedSamples.map(sample => `「${sample}」`).join('、')
+    return {
+      notice: withCriticNote(
+        notice,
+        `【首次修复·只试跑，未改动正文】${diffNote}${samples ? `\n动过的地方：${samples}` : ''}\n确认机制没问题后，下一章起将自动应用（并保留修复前快照）`
+      ),
+      text: params.text,
+    }
+  }
+
+  try {
+    await snapshotChapterVersion({
+      bookId: params.bookId,
+      chapterId: params.chapter.id,
+      title: params.chapter.title,
+      text: params.text,
+    })
+    const nextVersion = params.contentVersion + 1
+    await saveGeneratedChapterContent({
+      bookId: params.bookId,
+      chapterId: params.chapter.id,
+      title: params.chapter.title,
+      text: fix.text,
+      contentVersion: nextVersion,
+    })
+    await writeChapterLedger(params.chapter.id, fix.text)
+    await stampChapterFixLog(params.chapter.id, {
+      at: new Date().toISOString(),
+      orders: fix.orderCount,
+      beforeWords: fix.diff.beforeWords,
+      afterWords: fix.diff.afterWords,
+    })
+
+    // 用修复后的正文重跑规则轨（免费调用）：规则问题是否真被改掉以重检为准。
+    // AI 评审不再跑第二遍（会翻倍成本），所以保留下面的意见是**修复前**的，供人工复核。
+    const recheck = runLocalChapterQualityCheck({
+      chapterId: params.chapter.id,
+      chapterNo,
+      chapterTitle: params.chapter.title,
+      text: fix.text,
+      targetWords: params.targetWords,
+      contentVersion: nextVersion,
+      modelCode: params.modelCode,
+      orderedChapters: params.orderedChapters,
+    })
+    return {
+      notice: {
+        ...recheck,
+        critic: {
+          status: 'available',
+          scores: report.scores,
+          error: `${diffNote}\n修复前已存快照（章节历史里备注「自动修复前快照」），可整章回退；下列意见为修复前的评审结果。`,
+        },
+      },
+      text: fix.text,
+    }
+  } catch (error) {
+    return {
+      notice: withCriticNote(
+        notice,
+        `自动修复写入失败，正文已保持原样：${String((error as Error)?.message || error)}`
+      ),
+      text: params.text,
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -530,6 +716,7 @@ export const launchLocalChapterRewrite = (task: WorkflowTask, options: { instruc
         chapter,
         previousChapter: orderIndex > 0 ? orderedChapters[orderIndex - 1] : null,
         nextChapterSummary: nextChapter ? `第${nextChapter.sortNo}章《${nextChapter.title}》：${asText(nextChapter.summary)}` : '',
+        orderedChapters,
       })
       if (original.text.trim()) {
         materials['原稿（重写参考，不要照抄）'] = original.text.slice(0, 4000)
@@ -563,7 +750,9 @@ export const launchLocalChapterRewrite = (task: WorkflowTask, options: { instruc
       const contentVersion = original.contentVersion + 1
       await saveGeneratedChapterContent({ bookId, chapterId, title: chapter.title, text: fullText, contentVersion })
       await getLocalLibraryStorage().updateLocalChapter({ id: chapterId, workflowStatus: 'review_required' })
-      const notice = runLocalChapterQualityCheck({
+      // 闸二：落库后立刻扫一遍本章，把出场人物/章末写回账本，供下一章注入（失败不影响主流程）
+      await writeChapterLedger(chapterId, fullText)
+      const baseNotice = runLocalChapterQualityCheck({
         chapterId,
         chapterNo: Number(chapter.sortNo || 0),
         chapterTitle: chapter.title,
@@ -571,12 +760,27 @@ export const launchLocalChapterRewrite = (task: WorkflowTask, options: { instruc
         targetWords,
         contentVersion,
         modelCode,
+        orderedChapters,
       })
+      // 单章重写同样过闸三：重写往往就是"因为有问题才重写"，正是最该复核的时候
+      const selfCheck = await runCriticAndAutoFix({
+        run,
+        bookId,
+        chapter,
+        materials,
+        text: fullText,
+        notice: baseNotice,
+        modelCode,
+        targetWords,
+        contentVersion,
+        orderedChapters,
+      })
+      const notice = selfCheck.notice
       current = {
         ...current,
         status: 'review_required',
         progress: 100,
-        generatedWords: countWords(fullText),
+        generatedWords: countWords(selfCheck.text),
         canReview: true,
         canCancel: true,
         payload: { ...(current.payload || {}), qualityReview: { ...notice, requiresAction: true } },
@@ -754,6 +958,7 @@ const runWriterLoop = async (initial: WorkflowTask, flags: WriterFlags) => {
           targetWords,
           contentVersion: stored.contentVersion,
           modelCode: asText(run.modelCode),
+          orderedChapters: work.orderedChapters,
         })
         task = {
           ...task,
@@ -855,14 +1060,17 @@ const runWriterLoop = async (initial: WorkflowTask, flags: WriterFlags) => {
     }
 
     let fullText = ''
+    // materials 提到 try 外：闸三评审与施工单修复要用同一份素材，而它们在 try 之后才跑
+    let materials: Record<string, string> = {}
     try {
       flags.abort = new AbortController()
-      const materials = await buildChapterMaterials({
+      materials = await buildChapterMaterials({
         run,
         volume: work.volume,
         chapter,
         previousChapter,
         nextChapterSummary: nextChapter ? `第${nextChapter.sortNo}章《${nextChapter.title}》：${asText(nextChapter.summary)}` : '',
+        orderedChapters: work.orderedChapters,
       })
       if (isRewrite && asText(directive?.baseText)) {
         materials['原稿（重写参考，不要照抄）'] = asText(directive?.baseText).slice(0, 4000)
@@ -912,8 +1120,10 @@ const runWriterLoop = async (initial: WorkflowTask, flags: WriterFlags) => {
     // 落库 + 质检
     const contentVersion = (await readChapterText(bookId, chapter.id)).contentVersion + 1
     await saveGeneratedChapterContent({ bookId, chapterId: chapter.id, title: chapter.title, text: fullText, contentVersion })
+    // 闸二：落库后立刻扫一遍本章，把出场人物/章末写回账本，供下一章注入（失败不影响主流程）
+    await writeChapterLedger(chapter.id, fullText)
     emitSnapshot(fullText, true)
-    const notice = runLocalChapterQualityCheck({
+    const baseNotice = runLocalChapterQualityCheck({
       chapterId: chapter.id,
       chapterNo: Number(chapter.sortNo || 0),
       chapterTitle: chapter.title,
@@ -921,8 +1131,25 @@ const runWriterLoop = async (initial: WorkflowTask, flags: WriterFlags) => {
       targetWords,
       contentVersion,
       modelCode,
+      orderedChapters: work.orderedChapters,
     })
-    const words = countWords(fullText)
+    // 闸三 + 施工单自动修复。它可能把正文换掉，所以之后一律以 selfCheck 的返回值（notice / text）为准。
+    const selfCheck = await runCriticAndAutoFix({
+      run,
+      bookId,
+      chapter,
+      materials,
+      text: fullText,
+      notice: baseNotice,
+      modelCode,
+      targetWords,
+      contentVersion,
+      orderedChapters: work.orderedChapters,
+    })
+    const notice = selfCheck.notice
+    const finalText = selfCheck.text
+    if (finalText !== fullText) emitSnapshot(finalText, true)
+    const words = countWords(finalText)
     const finished = Number(task.finishedChapters || 0)
     const total = Math.max(Number(task.totalChapters || 0), finished + work.pendingInVolume.length)
 

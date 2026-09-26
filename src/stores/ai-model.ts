@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue'
+﻿import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import type { AiModelGroupCode, AiModelOption, AiModelOptionsResult } from '@/types/ai-model'
 import {
@@ -91,7 +91,11 @@ export const useAiModelStore = defineStore('ai-model', () => {
   /** AI 功能取模型的统一入口：偏好组未加载则先加载，返回文本默认模型 code（可能为空） */
   const ensureTextModel = async (): Promise<string> => {
     if (!textModel.value) await loadGroup('text_assist')
-    return textModel.value
+    if (textModel.value) return textModel.value
+    // 未在「模型管理」设置默认偏好时，回落到第一个已启用的文本模型，
+    // 保证拆书 / 划词润色 / 续写 / 工作流 / 妙笔等 AI 功能开箱即用
+    const fallback = textModels.value[0]
+    return fallback ? fallback.code : ""
   }
   const loadWorkflowModels = (force = false) => loadGroup('workflow_book', force)
   const loadImageModels = (force = false) => loadGroup('image_generation', force)

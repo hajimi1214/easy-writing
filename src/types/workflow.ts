@@ -74,6 +74,12 @@ export interface WorkflowQualityIssue {
   message: string;
   severity: 'high' | 'low';
   blocking: boolean;
+  /**
+   * 自检分级（本书《全书设定基线》§13 口径）：
+   * P0 红线越界 / 剧透 / 结构越卷——不改不能交付；P1 认知边界 / 连续性硬伤 / 机制错误；
+   * P2 AI 味 / 重复 / 纪年 / 排版编号。规则轨与 AI 评审轨共用这一分级，便于按级统计。
+   */
+  grade?: 'P0' | 'P1' | 'P2';
   evidence?: string;
   fix?: string;
   paragraphs?: number[];

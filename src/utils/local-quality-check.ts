@@ -1,13 +1,20 @@
 import type { WorkflowQualityIssue, WorkflowQualityNotice } from '@/types/workflow'
 import { scanSensitiveText } from '@/storage/local-sensitive-words'
+import type { LocalChapter } from '@/storage/local-library-types'
+import { buildArtifactTotals } from '@/utils/fact-ledger'
+import { lintChapterWithRules, summarizeGrades } from '@/utils/quality-rules'
 import { countWords } from '@/utils/word-count'
 
 /**
- * 逐章生文的本地规则质检（服务端"规则 + AI 评审"双轨里的规则轨）。
+ * 逐章生文的本地规则质检（服务端"规则 + AI 评审"双轨里的规则轨 = 自检三闸的「闸一」）。
  *
- * 开源版不跑 AI 评审（每章多一次付费调用，收益不稳），critic 如实标 unavailable。
- * 规则收得很紧：只拦"明显写坏了"的硬伤（字数严重不足、整段复读），
- * 敏感词和字数偏多只作提示不拦截——拦截意味着生成停机等确认，误拦比漏报更伤。
+ * 开源版不跑 AI 评审（每章多一次付费调用，收益不稳），critic 如实标 unavailable，
+ * 只把规则轨的结果按 P0/P1/P2 分级报出来；AI 评审（闸三）由外部工具接 DeepSeek 补上。
+ * 规则收得很紧：只拦"明显写坏了"的硬伤（字数严重不足、整段复读、**剧透红线越界**），
+ * 敏感词、字数偏多、AI 味词表只作提示不拦截——拦截意味着生成停机等确认，误拦比漏报更伤。
+ *
+ * 规则数据来自 src/config/quality-rules/*.json，与生成前的提示词注入（quality-rules.ts）
+ * 共用同一份，保证「写之前告诉模型什么不能写」和「写完之后检查有没有违规」口径一致。
  */
 
 const WORD_LOW_BLOCK_RATIO = 0.55
@@ -95,6 +102,8 @@ const checkSensitiveWords = (text: string): WorkflowQualityIssue[] => {
   }]
 }
 
+const gradeRank = (grade?: string) => (grade === 'P0' ? 0 : grade === 'P1' ? 1 : 2)
+
 export const runLocalChapterQualityCheck = (params: {
   chapterId: number
   chapterNo: number
@@ -103,13 +112,45 @@ export const runLocalChapterQualityCheck = (params: {
   targetWords: number
   contentVersion: number
   modelCode?: string
+  /**
+   * 全书按序章列表：用来从闸二账本里取「截至上一章各可数物件的累计数」。
+   * 账本读的是各章 planMeta 缓存，**同步**即可，不需要 await。
+   * 不传就跳过数量平衡校验（没有前账就没有比对基准）。
+   */
+  orderedChapters?: LocalChapter[]
 }): WorkflowQualityNotice => {
   const words = countWords(params.text)
-  const issues = [
+  const baseIssues = [
     ...checkWordCount(words, params.targetWords),
     ...checkParagraphRepeat(params.text),
     ...checkSensitiveWords(params.text),
   ]
+
+  // 闸一扩展：剧透红线按章排期、AI 味词表/句式、节奏与开篇钩子。
+  // 与生成前注入用的是同一份规则 JSON，所以「模型被要求别写」和「写完被判违规」是同一套标准。
+  const artifactTotals = params.orderedChapters
+    ? buildArtifactTotals(params.orderedChapters, params.chapterNo)
+    : undefined
+  const ruleIssues = lintChapterWithRules({
+    text: params.text,
+    chapterNo: params.chapterNo,
+    targetWords: params.targetWords,
+    artifactTotals,
+  })
+
+  // 两套规则会有同名 code（字数、敏感词），按 code 去重且基础规则优先，避免面板里同一问题报两遍。
+  const seenCodes = new Set<string>()
+  const issues = [...baseIssues, ...ruleIssues]
+    .filter(issue => {
+      if (seenCodes.has(issue.code)) return false
+      seenCodes.add(issue.code)
+      return true
+    })
+    .sort((a, b) => gradeRank(a.grade) - gradeRank(b.grade))
+
+  const grades = summarizeGrades(issues)
+  const hasGradeHit = grades.P0 + grades.P1 + grades.P2 > 0
+
   return {
     version: 1,
     requiresAction: issues.some(issue => issue.blocking),
@@ -121,6 +162,11 @@ export const runLocalChapterQualityCheck = (params: {
     contentVersion: params.contentVersion,
     modelCode: params.modelCode,
     createdAt: new Date().toISOString(),
-    critic: { status: 'unavailable', error: '开源版暂未接入 AI 评审，仅做规则检查' },
+    critic: {
+      status: 'unavailable',
+      error: hasGradeHit
+        ? `开源版未接入 AI 评审；本地规则轨已跑：P0 ${grades.P0} / P1 ${grades.P1} / P2 ${grades.P2}（共 ${issues.length} 项）`
+        : '开源版暂未接入 AI 评审，仅做规则检查；本章本地规则零命中',
+    },
   }
 }

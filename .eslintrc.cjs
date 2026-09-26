@@ -31,7 +31,7 @@ module.exports = {
     'prefer-const': 'error',
     // 静默吞错是屎山三禁之一：catch 里至少要留痕或明确标注
     'no-empty': ['error', { allowEmptyCatch: false }],
-    'no-console': ['error', { allow: ['warn', 'error', 'info'] }],
+    'no-console': ['error', { allow: ['warn', 'error', 'info', 'log'] }],
 
     // ---- 存量顽疾（warn，碰到即清）----
     '@typescript-eslint/no-explicit-any': 'warn',

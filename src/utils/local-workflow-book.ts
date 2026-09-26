@@ -118,6 +118,12 @@ const importSettingWorld = async (
     asText(core.ability?.intro),
     asText(core.ability?.innate?.desc) ? `先天：${asText(core.ability?.innate?.desc)}` : '',
     asText(core.ability?.acquired?.desc) ? `后天：${asText(core.ability?.acquired?.desc)}` : '',
+    asText(core.ability?.bodyMemory?.desc)
+      ? `${asText(core.ability?.bodyMemory?.title) || '身体记忆'}：${asText(core.ability?.bodyMemory?.desc)}`
+      : '',
+    asText(core.ability?.sealArt?.desc)
+      ? `${asText(core.ability?.sealArt?.title) || '印术传承'}：${asText(core.ability?.sealArt?.desc)}`
+      : '',
   ]))
   const mechanics = Array.isArray(core.mechanics?.items) ? core.mechanics.items : []
   await add('世界机制', 5, joinLines([

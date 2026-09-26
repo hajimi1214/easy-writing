@@ -79,6 +79,8 @@ const defaultCore: WorkflowSettingCore = {
     intro: '',
     innate: { icon: 'fa-solid fa-cloud', title: '先天能力', desc: '' },
     acquired: { icon: 'fa-solid fa-spa', title: '后天能力', desc: '' },
+    bodyMemory: { icon: 'fa-solid fa-hand', title: '身体记忆', desc: '' },
+    sealArt: { icon: 'fa-solid fa-stamp', title: '印术传承', desc: '' },
     dimensions: [],
   },
   mechanics: {
@@ -827,6 +829,8 @@ const normalizeCore = (core: JsonRecord | null | undefined, content?: JsonRecord
         title: '成长目标',
         desc: asText(protagonist.goal),
       },
+      bodyMemory: core?.ability?.bodyMemory || clone(defaultCore.ability.bodyMemory),
+      sealArt: core?.ability?.sealArt || clone(defaultCore.ability.sealArt),
       dimensions: dimensions.length ? dimensions : [protagonist.identity, protagonist.personality].map(item => asText(item)).filter(Boolean),
     },
     mechanics: {

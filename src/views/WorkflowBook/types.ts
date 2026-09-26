@@ -225,6 +225,8 @@ export interface WorkflowSettingCard {
 export interface WorkflowSettingRealm {
   name: string
   desc: string
+  /** 剧透闸门：本章号未到此值时，该境界不注入正文提示词。缺省=始终可见 */
+  revealAtChapter?: number
 }
 
 // 核心设定中带图标的小条目（世界机制 / 资源体系 / 先后天能力）
@@ -232,6 +234,8 @@ export interface WorkflowSettingCoreItem {
   icon: string
   title: string
   desc: string
+  /** 剧透闸门：本章号未到此值时，该条目不注入正文提示词。缺省=始终可见 */
+  revealAtChapter?: number
 }
 
 export interface WorkflowSettingCore {
@@ -239,11 +243,18 @@ export interface WorkflowSettingCore {
     intro: string
     realms: WorkflowSettingRealm[]
     more: string
+    /**
+     * 早期卷（看不到全书真相的章）用的安全版体系概述。
+     * 写了它就替代 intro —— 因为 intro 常写着「飞升并非解脱，而是更高层的囚禁」这类卷五才该揭的结论。
+     */
+    briefIntro?: string
   }
   ability: {
     intro: string
     innate: WorkflowSettingCoreItem
     acquired: WorkflowSettingCoreItem
+    bodyMemory: WorkflowSettingCoreItem
+    sealArt: WorkflowSettingCoreItem
     dimensions: string[]
   }
   mechanics: {
@@ -265,6 +276,14 @@ export interface WorkflowSettingCharacter {
   keywords: string
   motivation: string
   badge?: string
+  /** 剧透闸门：本章号未到此值时，该人物整条不注入（后卷才登场的人物靠它挡住） */
+  revealAtChapter?: number
+  /**
+   * 当前阶段安全简介。写了它就**只**注入 `姓名：briefBackground`，
+   * gender / identity / motivation 一律不再进提示词 —— 用于卷一就已出场、
+   * 但设定稿里带着后卷真相的人物（流白、黑影、宁观山这类）。
+   */
+  briefBackground?: string
 }
 
 export interface WorkflowSettingStoryline {
@@ -273,6 +292,8 @@ export interface WorkflowSettingStoryline {
   title: string
   desc: string
   keyEvent: string
+  /** 剧透闸门：该卷尚未开始时，这条故事线不注入（故事线本就按卷划分） */
+  revealAtChapter?: number
 }
 
 export interface WorkflowSettingAssistAction {

@@ -1,0 +1,27 @@
+{
+  "_note": "人物名册与基础实体表（闸一·规则轨 + 闸二·事实账本的共同底座）。来源：easy-writing/public/seed-volume1.json 的 characters(10)、volumes(7)。用途：①开篇钩子判定（前300字内是否有人物出场）②人物名册越界检查（出现未登记人名需人工确认）③闸二「死人复活」检查的基础。注意：secretOf 字段是闸三评审用的「角色盲区」，卷内不得让该角色表现出已知。",
+  "version": 1,
+  "generatedFrom": "seed-volume1.json",
+  "characters": [
+    { "id": "p1", "name": "流白", "aliases": ["掌柜", "流掌柜"], "role": "棺材铺掌柜，长生者", "isProtagonist": true, "secretOf": ["自身身世", "旧名", "力量来源"] },
+    { "id": "p2", "name": "宁墨", "aliases": ["墨丫头"], "role": "孤女，流白的记忆锚点", "secretOf": [] },
+    { "id": "p3", "name": "顾九归", "aliases": ["老顾"], "role": "流白的故人，十世轮回者", "secretOf": [] },
+    { "id": "p4", "name": "宁观山", "aliases": [], "role": "宁墨之父，前调查者", "secretOf": [] },
+    { "id": "p5", "name": "韩照骨", "aliases": [], "role": "外门执事（普通宗门执事，非死生门）", "secretOf": [] },
+    { "id": "p6", "name": "灭口黑影", "aliases": ["黑影", "影子"], "role": "身份成谜的灭口者；实为守门人之一（卷六揭示）", "secretOf": ["守门人身份"] },
+    { "id": "p7", "name": "小满", "aliases": [], "role": "没有户籍的孩子", "secretOf": [] },
+    { "id": "p8", "name": "执灯人", "aliases": [], "role": "上界执灯人，飞升体系维持者", "secretOf": [] },
+    { "id": "p9", "name": "抹史者", "aliases": [], "role": "无名司最高执事", "secretOf": [] },
+    { "id": "p10", "name": "九人旧信", "aliases": [], "role": "当年与流白共同参与封印的九位故人（含顾九归、持棺钉守门人）", "secretOf": [], "isCollective": true }
+  ],
+  "volumes": [
+    { "id": "v1", "title": "第一卷 槐坡32号", "chapterCount": 30 },
+    { "id": "v2", "title": "死生门", "chapterCount": 36 },
+    { "id": "v3", "title": "百年墨痕", "chapterCount": 34 },
+    { "id": "v4", "title": "无名仙朝", "chapterCount": 32 },
+    { "id": "v5", "title": "飞升", "chapterCount": 32 },
+    { "id": "v6", "title": "归人", "chapterCount": 34 },
+    { "id": "v7", "title": "墨痕", "chapterCount": 30 }
+  ],
+  "totalChapters": 228
+}

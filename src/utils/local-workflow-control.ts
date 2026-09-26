@@ -24,6 +24,8 @@ import {
   emitLocalWorkflowEvent,
   findLiveLocalTaskForRun,
   getLiveLocalTask,
+  registerLiveLocalTask,
+  unregisterLiveLocalTask,
 } from '@/utils/local-workflow-runtime'
 import {
   launchLocalBookWriter,
@@ -122,12 +124,24 @@ export const generateLocalWorkflowBook = async (data: {
     payload: {},
     checkpoint: null,
   }
+  // 同步登记 live 占位，避免 queued 落库到循环注册之间被孤儿修复误判（同 resume）
+  registerLiveLocalTask({
+    taskId: Number(task.id),
+    runId: Number(task.runId),
+    kind: 'book',
+    requestCancel: () => undefined,
+  })
+  try {
   await writeLocalWorkflowTask(task)
   run.activeTaskId = Number(task.id)
   run.latestBookTaskId = Number(task.id)
   run.status = 'generating'
   run.updateTime = nowIso()
   await writeLocalWorkflowRun(run)
+  } catch (genPersistError) {
+    unregisterLiveLocalTask(Number(task.id))
+    throw genPersistError
+  }
   launchLocalBookWriter(task)
   return { data: task }
 }
@@ -165,11 +179,26 @@ export const resumeLocalWorkflowTask = async (data: { taskId: number }) => {
     canResume: false,
     canCancel: true,
   }
-  await writeLocalWorkflowTask(next)
+  // 修复时序竞争：先同步登记 live 占位句柄，再 await 落库 queued——
+  // 否则在『已写 queued、循环尚未 registerLive』的 await 间隙，并发的
+  // readRepairedLocalTask 会把任务误判成应用关闭孤儿，翻回 interrupted。
+  // launchLocalBookWriter 内的 taskFlagHandle 会用同 taskId 覆盖此占位句柄。
+  registerLiveLocalTask({
+    taskId: Number(next.id),
+    runId: Number(next.runId),
+    kind: 'book',
+    requestCancel: () => undefined,
+  })
+  try {
+    await writeLocalWorkflowTask(next)
   const run = await readRunOrThrow(Number(task.runId))
   run.activeTaskId = Number(task.id)
   run.status = 'generating'
   await writeLocalWorkflowRun(run)
+  } catch (resumePersistError) {
+    unregisterLiveLocalTask(Number(next.id))
+    throw resumePersistError
+  }
   launchLocalBookWriter(next)
   return { data: next }
 }

@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="workflow-book-page" :class="{ 'workflow-book-page--restoring': restoredRun }">
     <!-- 恢复提示条与「历史记录」同处顶部动作区：提示条出现时整行回到文档流，
          否则绝对定位的「历史记录」会盖住提示条右侧的按钮。 -->
@@ -1021,6 +1021,60 @@ const confirmRegenerate = async (target: string) => {
   }
 }
 
+// 世界背景最终版同步：从 seed 把 5 张 worldCards 写入 draft.settingResult
+// 设定同步：从 seed 同步 worldCards、core、characters 与 storylines（最终版）
+const importWorldBgSeedIfNeeded = async () => {
+  if (!draft.id) return
+  // v5：seed 补了剧透排期字段（revealAtChapter / briefBackground / briefIntro）。
+  // 旧书的设定里没有这些字段，不强制再同步一次的话，泄底闸门对存量书完全不生效。
+  const markerKey = `ew-world-bg-${draft.id}-v5`
+  try {
+    if (localStorage.getItem(markerKey) === '1') return
+    // 完整性检查：worldCards 含 w5，core 9/6/6，characters 10 张，storylines 7 条，
+    // 并且剧透排期字段已就位 —— 只查条数会让存量旧数据蒙混过关，marker 一打就再也不补。
+    const cur = draft.settingResult || {}
+    const cards = cur.worldCards || []
+    const realms = cur.core?.cultivation?.realms || []
+    const mechs = cur.core?.mechanics?.items || []
+    const ress = cur.core?.resources?.items || []
+    const chars = cur.characters || []
+    const lines = cur.storylines || []
+    if (
+      cards.length >= 5 && cards.some(c => c.id === 'w5' && c.title === '飞升与封印') &&
+      realms.length >= 9 && mechs.length >= 6 && ress.length >= 6 &&
+      chars.length >= 10 && chars.some(c => c.id === 'p10' && c.name === '九人旧信') &&
+      lines.length >= 7 && lines.some(l => l.id === 's7' && l.title.includes('墨痕')) &&
+      realms.some(r => Number(r.revealAtChapter || 0) > 0) &&
+      chars.some(c => Boolean(String(c.briefBackground || '').trim())) &&
+      lines.some(l => Number(l.revealAtChapter || 0) > 0)
+    ) {
+      localStorage.setItem(markerKey, '1')
+      return
+    }
+    const resp = await fetch('/seed-volume1.json')
+    if (!resp.ok) return
+    const seed = await resp.json()
+    if (
+      !Array.isArray(seed?.worldCards) || seed.worldCards.length < 5 ||
+      !seed?.core ||
+      !Array.isArray(seed?.characters) || seed.characters.length < 10 ||
+      !Array.isArray(seed?.storylines) || seed.storylines.length < 7
+    ) return
+    // 只替换 worldCards、core、characters、storylines，其余设定原样保留
+    draft.settingResult = {
+      ...cur,
+      worldCards: seed.worldCards,
+      core: seed.core,
+      characters: seed.characters,
+      storylines: seed.storylines,
+    }
+    await persistDraft({ currentStep: 'SETTING_GENERATE', status: 'waiting_user' })
+    localStorage.setItem(markerKey, '1')
+    ElMessage.success('已同步世界背景、核心设定、角色卡与故事线')
+  } catch (error) {
+    console.warn('[world-bg] 同步失败', error)
+  }
+}
 // 大纲/设定页的"重新生成"入口：与前进重生共用覆盖确认，成功后停留在当前步骤。
 const regenerateOutline = async () => {
   if (busy.value) return
@@ -1781,6 +1835,7 @@ onMounted(() => {
     await loadWorkflow()
     // 恢复检查紧跟 run 加载：进入页面立即接管"生成中"状态，不等次要资源
     void restoreActiveStepTask()
+    void importWorldBgSeedIfNeeded()
   })()
   void loadWorkflowResources()
   void loadWorkflowModels()

@@ -1,0 +1,175 @@
+{
+  "_note": "剧透排期禁语表（闸一·规则轨最高优先级）。来源：分卷合订版/00-全书设定基线.md 第三节「世界真相分层与揭示排期」+「排期速查」。判定原则：本章章号落在 bannedUntilChapter 之内且命中 term/patterns 即为 P0 红线越界，不改不能交付。",
+  "version": 1,
+  "generatedFrom": "00-全书设定基线.md §三",
+  "volumeRanges": {
+    "1": { "name": "槐坡32号", "from": 1, "to": 30 },
+    "2": { "name": "死生门", "from": 31, "to": 66 },
+    "3": { "name": "百年墨痕", "from": 67, "to": 100 },
+    "4": { "name": "无名仙朝", "from": 101, "to": 132 },
+    "5": { "name": "飞升", "from": 133, "to": 164 },
+    "6": { "name": "归人", "from": 165, "to": 198 },
+    "7": { "name": "墨痕", "from": 199, "to": 228 }
+  },
+  "bans": [
+    {
+      "id": "SPOIL-SSM",
+      "label": "死生门三字显名",
+      "severity": "P0",
+      "dimension": "设定红线",
+      "terms": ["死生门"],
+      "bannedUntilChapter": 30,
+      "exceptions": [{ "chapter": 30, "maxOccurrences": 1, "note": "仅允许第30章卷末墨图显名一次" }],
+      "rule": "卷一禁止出现「死生门」三字（仅允许第30章卷末墨图显名一次）"
+    },
+    {
+      "id": "SPOIL-IDENTITY",
+      "label": "活人顶替死人 / 换壳 / 覆盖",
+      "severity": "P0",
+      "dimension": "设定红线",
+      "terms": [],
+      "patterns": [
+        "活人顶替死人",
+        "顶替死人",
+        "换壳",
+        "以名留魂",
+        "名册覆盖",
+        "覆盖活人身份"
+      ],
+      "bannedUntilChapter": 30,
+      "rule": "卷一禁止说破「活人顶替死人/换壳」；身份覆盖机制卷二起才允许正面展开"
+    },
+    {
+      "id": "SPOIL-RETURNEE-PHRASE",
+      "label": "归来者，不得记得自己",
+      "severity": "P0",
+      "dimension": "设定红线",
+      "terms": ["归来者，不得记得自己", "归来者不得记得自己"],
+      "bannedUntilChapter": 65,
+      "exceptions": [{ "chapter": 66, "maxOccurrences": 1, "note": "卷二卷末残页自补首次出现" }],
+      "rule": "该句卷二卷末首次出现；卷六之前一律按「世界规则/疑似诅咒」处理，卷七才反转点破其保护性质"
+    },
+    {
+      "id": "SPOIL-XIANCHAO",
+      "label": "无名仙朝见名",
+      "severity": "P0",
+      "dimension": "设定红线",
+      "terms": ["无名仙朝"],
+      "bannedUntilChapter": 65,
+      "exceptions": [{ "chapter": 66, "maxOccurrences": 1, "note": "卷二卷末残页首次见名" }],
+      "rule": "「无名仙朝」卷二卷末残页首次见名、卷四展开全貌"
+    },
+    {
+      "id": "SPOIL-GUOSHU-AUTHOR",
+      "label": "国书落款是流白",
+      "severity": "P0",
+      "dimension": "设定红线",
+      "patterns": [
+        "国书[^。]{0,10}?(署名|落款)[^。]{0,6}?(流白|正是他|是他|他写|他签)",
+        "(流白|正是他)[^。]{0,6}?(写|签)的[^。]{0,6}?国书",
+        "国书[^。]{0,8}?(是|乃|出自)流白"
+      ],
+      "bannedUntilChapter": 131,
+      "calibrated": "v2 收紧：v1 仅匹配到「国书上落款」即报警，未连到流白身份，语料实测为误报。现要求「国书」与「流白/正是他」在同一句内共现。",
+      "rule": "「国书落款是流白」卷四末才揭晓，之前只能给笔迹相似、手艺同源的物证"
+    },
+    {
+      "id": "SPOIL-ASCENSION",
+      "label": "飞升是骗局/囚笼",
+      "severity": "P0",
+      "dimension": "设定红线",
+      "patterns": [
+        "飞升.{0,8}(骗局|囚笼|陷阱|谎言)",
+        "(骗局|囚笼).{0,6}飞升",
+        "飞升.{0,8}(记忆|寿元|神魂).{0,6}(抽|燃料)"
+      ],
+      "bannedUntilChapter": 132,
+      "rule": "「飞升」全貌、飞升骗局卷五之前一律禁止揭示"
+    },
+    {
+      "id": "SPOIL-REINCARNATION-GATE",
+      "label": "轮回门被封死",
+      "severity": "P0",
+      "dimension": "设定红线",
+      "patterns": [
+        "轮回门.{0,10}(封死|封印|后天|人为)",
+        "(封死|封印).{0,6}轮回门"
+      ],
+      "bannedUntilChapter": 132,
+      "rule": "轮回门是后天封死的巨大封印，卷五之前禁止揭示"
+    },
+    {
+      "id": "SPOIL-SHADOW-IDENTITY",
+      "label": "黑影是流白留下的守门人",
+      "severity": "P0",
+      "dimension": "设定红线",
+      "patterns": [
+        "黑影.{0,10}(守门人|流白.{0,4}留下)",
+        "守门人.{0,10}黑影"
+      ],
+      "bannedUntilChapter": 164,
+      "rule": "黑影身份卷六才自曝为流白当年留下的守门人之一"
+    },
+    {
+      "id": "SPOIL-NINGGUANSHAN",
+      "label": "宁观山主动以死送女",
+      "severity": "P0",
+      "dimension": "设定红线",
+      "patterns": [
+        "宁观山.{0,12}(主动|故意|自尽|以死|送女)",
+        "(主动|故意).{0,6}(死|赴死).{0,8}(送女|为.{0,2}宁墨)"
+      ],
+      "bannedUntilChapter": 164,
+      "rule": "「宁观山主动以死送女」卷六才揭全"
+    },
+    {
+      "id": "SPOIL-GUJIUGUI",
+      "label": "顾九归自愿十世轮回",
+      "severity": "P0",
+      "dimension": "设定红线",
+      "patterns": [
+        "顾九归.{0,12}(自愿|主动).{0,8}(轮回|十世)",
+        "自愿.{0,6}十世轮回"
+      ],
+      "bannedUntilChapter": 163,
+      "exceptions": [{ "chapter": 164, "maxOccurrences": 99, "note": "卷五末允许铺垫" }],
+      "rule": "「顾九归自愿十世轮回」卷五末铺垫、卷六揭全"
+    },
+    {
+      "id": "SPOIL-PROTECT-REVERSAL",
+      "label": "保护规则反转（非诅咒）",
+      "severity": "P0",
+      "dimension": "设定红线",
+      "patterns": [
+        "(不是诅咒|并非诅咒|而非诅咒).{0,10}(保护|规则)",
+        "(保护规则|保护性规则).{0,10}(不是诅咒|而非诅咒)"
+      ],
+      "bannedUntilChapter": 198,
+      "rule": "「归来者，不得记得自己」的保护规则性质卷七才反转点破"
+    },
+    {
+      "id": "SPOIL-ERA-WORD",
+      "label": "现实年代词（纪年越界）",
+      "severity": "P1",
+      "dimension": "设定红线",
+      "terms": ["民国", "清朝", "明朝", "唐朝", "宋朝", "公元"],
+      "bannedUntilChapter": 228,
+      "rule": "§12.5 纪年用干支＋架空，禁止现实年代词。全书通用禁令"
+    },
+    {
+      "id": "SPOIL-OMNISCIENT-SEE",
+      "label": "空推句式（无物证的一眼看出）",
+      "severity": "P2",
+      "dimension": "文风",
+      "patterns": [
+        "一眼看出",
+        "一眼便知",
+        "心中了然",
+        "忽然明白了一切",
+        "瞬间明了"
+      ],
+      "bannedUntilChapter": 228,
+      "rule": "§12.4 禁止「一眼看出/心中了然」式空推；每个关键判断前必须有可复核物证"
+    }
+  ]
+}

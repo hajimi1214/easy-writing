@@ -42,6 +42,31 @@ const isOpenAiReasoningModel = (modelCode: string) => /^(o\d|gpt-5)/i.test(Strin
 // 上限只是护栏，普通模型不会因此多产出
 const NON_STREAM_MIN_TOKENS = 2048
 
+/**
+ * 被上游拒过温度参数的模型（存 `modelCode`）。
+ *
+ * 有些思考型模型硬性要求 temperature = 1.0：实测 kimi-k3 开启思考时收到 0.2 直接回
+ * `400 invalid temperature: must be 1.0 when thinking is enabled`。而平台提示词库按场景
+ * 配了温度（评审 0.2、正文 0.82），两者天生打架。
+ *
+ * 这里刻意**不维护一张「挑食模型」名单** —— 名单永远追不上新模型。改成让上游自己说：
+ * 它一报温度错，就记住这个模型、摘掉温度重来一次；此后该模型的请求一律不再带温度。
+ */
+const temperatureRejectedModels = new Set<string>()
+
+/** 上游在抱怨温度、且本次确实带了温度 → 值得摘掉温度重试（顺带记住这个模型） */
+const rememberTemperatureRejection = (
+  modelCode: string,
+  message: string,
+  temperature?: number
+): boolean => {
+  const code = String(modelCode || '').trim()
+  if (!code || temperature === undefined) return false
+  if (!/temperature/i.test(message)) return false
+  temperatureRejectedModels.add(code)
+  return true
+}
+
 /** 按供应商差异拼 chat/completions 请求体：三家怪癖集中在这一处 */
 export const buildChatBody = (params: {
   baseUrl: string
@@ -64,7 +89,9 @@ export const buildChatBody = (params: {
   if (maxTokens) {
     body[isOpenAiOfficial(params.baseUrl) ? 'max_completion_tokens' : 'max_tokens'] = maxTokens
   }
-  const dropTemperature = isOpenAiOfficial(params.baseUrl) && isOpenAiReasoningModel(params.modelCode)
+  const dropTemperature =
+    (isOpenAiOfficial(params.baseUrl) && isOpenAiReasoningModel(params.modelCode)) ||
+    temperatureRejectedModels.has(String(params.modelCode || '').trim())
   if (params.temperature !== undefined && !dropTemperature) {
     body.temperature = params.temperature
   }
@@ -255,30 +282,75 @@ export const requestLocalChatCompletion = async (options: {
   }
 
   try {
-    const aiFetch = await resolveAiFetch()
-    const response = await aiFetch(joinAiUrl(model.baseUrl, 'chat/completions'), {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${model.apiKey}`,
-      },
-      body: JSON.stringify(
-        buildChatBody({
-          baseUrl: model.baseUrl,
-          modelCode: model.modelCode,
-          messages: options.messages,
-          maxTokens: options.maxTokens || model.maxOutputTokens || undefined,
-          temperature: options.temperature,
-          stream: false,
+    // 上游偶发空响应体 / 504·502·503 网关抖动 / 网络瞬断：自动重试最多 3 次，递增间隔
+    // 重试判据 RETRIABLE_UPSTREAM 声明在文件末尾，非流式与流式共用同一份
+    let lastParseError: Error | null = null
+    let content = ''
+    let body: any = null
+    const MAX_ATTEMPTS = 3
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      if (attempt > 0) {
+        await new Promise((r) => setTimeout(r, 800 * attempt))
+        recordAiCall({
+          recordType: 'text',
+          tag: options,
+          model,
+          status: 0,
+          input: recordInput,
+          output: '',
+          outputTokens: 0,
+          startedAt,
+          errorMsg: `上游异常，第 ${attempt + 1}/${MAX_ATTEMPTS} 次重试`,
         })
-      ),
-    })
-    if (!response.ok) throw new Error(await readableHttpError(response))
-    const body = await response.json()
-    if (body?.error?.message) throw new Error(String(body.error.message))
-    // 剥掉部分渠道内联进 content 的 <think> 思考段，只留真正文
-    const content = stripThinkBlocks(String(body?.choices?.[0]?.message?.content || '')).trim()
+      }
+      try {
+        const aiFetch = await resolveAiFetch()
+        const response = await aiFetch(joinAiUrl(model.baseUrl, 'chat/completions'), {
+          method: 'POST',
+          signal: controller.signal,
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${model.apiKey}`,
+          },
+          body: JSON.stringify(
+            buildChatBody({
+              baseUrl: model.baseUrl,
+              modelCode: model.modelCode,
+              messages: options.messages,
+              maxTokens: options.maxTokens || model.maxOutputTokens || undefined,
+              temperature: options.temperature,
+              stream: false,
+            })
+          ),
+        })
+        if (!response.ok) {
+          const message = await readableHttpError(response)
+          if (rememberTemperatureRejection(model.modelCode, message, options.temperature)) {
+            return requestLocalChatCompletion({ ...options, temperature: undefined })
+          }
+          throw new Error(message)
+        }
+        const parsed = await response.json()
+        if (parsed?.error?.message) throw new Error(String(parsed.error.message))
+        body = parsed
+        content = stripThinkBlocks(String(parsed?.choices?.[0]?.message?.content || '')).trim()
+        if (content === '' && attempt < MAX_ATTEMPTS - 1) {
+          lastParseError = new Error('上游返回空内容')
+          continue
+        }
+        break
+      } catch (error) {
+        const isAbort = error instanceof DOMException && error.name === 'AbortError'
+        if (isAbort) throw error
+        const msg = readableRequestError(error)
+        if (RETRIABLE_UPSTREAM.test(msg) && attempt < MAX_ATTEMPTS - 1) {
+          lastParseError = error instanceof Error ? error : new Error(msg)
+          continue
+        }
+        throw error
+      }
+    }
+    if (content === '' && lastParseError) throw lastParseError
     recordAiCall({
       recordType: 'text',
       tag: options,
@@ -348,10 +420,12 @@ export const streamLocalChatCompletion = async (
     messages: LocalChatMessageInput[]
     /** 采样温度（0-2）：来自提示词库逐场景配置；未传用模型服务默认 */
     temperature?: number
+    /** 输出上限：需要按场景收口的调用方（评审、改写）显式传；不传用模型配置值 */
+    maxTokens?: number
     signal?: AbortSignal
   } & LocalAiSceneTag,
   callbacks: LocalChatStreamCallbacks
-) => {
+): Promise<void> => {
   const model = getLocalAiModelSecret(options.modelCode)
   if (!model) {
     callbacks.onError(NO_MODEL_MESSAGE)
@@ -417,7 +491,7 @@ export const streamLocalChatCompletion = async (
           baseUrl: model.baseUrl,
           modelCode: model.modelCode,
           messages: options.messages,
-          maxTokens: model.maxOutputTokens || undefined,
+          maxTokens: options.maxTokens || model.maxOutputTokens || undefined,
           temperature: options.temperature,
           stream: true,
         })
@@ -425,6 +499,9 @@ export const streamLocalChatCompletion = async (
     })
     if (!response.ok) {
       const message = await readableHttpError(response)
+      if (rememberTemperatureRejection(model.modelCode, message, options.temperature)) {
+        return streamLocalChatCompletion({ ...options, temperature: undefined }, callbacks)
+      }
       recordStream(0, message)
       callbacks.onError(message)
       return
@@ -503,6 +580,64 @@ export const streamLocalChatCompletion = async (
     clearIdle()
     if (options.signal) options.signal.removeEventListener('abort', onCallerAbort)
   }
+}
+
+// ---------------------------------------------------------------------------
+// 流式「一次性收全」：给需要拿到完整结果才能往下走的调用方
+// （闸三 AI 评审、施工单自动修复）
+// ---------------------------------------------------------------------------
+
+/** 上游抖动值得重试的判据：非流式与流式共用同一份 */
+const RETRIABLE_UPSTREAM =
+  /end of JSON input|empty|unexpected|\b(502|503|504)\b|gateway|timed? ?out|network|load failed|ECONNRESET|ETIMEDOUT|ERR_NETWORK/i
+
+/**
+ * 流式补全的「一次性收全」封装。
+ *
+ * 为什么非要流式：网关对**非流式**请求约 60 秒硬超时（超了回 504），而思考型模型的思维链
+ * 动辄几十秒 —— 用非流式等于把 glm / kimi / seed 这类模型直接挡在评审之外。
+ * 流式靠持续出数据保住连接：实测同一个 glm-5.1，非流式 60 秒被 504 掐断，流式 79 秒完整收完。
+ *
+ * 失败语义与非流式版保持一致：一律抛可读 Error，由调用方收敛成降级状态。
+ * 用户主动中止也判失败——评审/改写要的是完整结果，半截等于坏结果。
+ */
+export const requestLocalChatCompletionStreaming = async (options: {
+  modelCode: string
+  messages: LocalChatMessageInput[]
+  maxTokens?: number
+  temperature?: number
+  signal?: AbortSignal
+} & LocalAiSceneTag): Promise<string> => {
+  const MAX_ATTEMPTS = 3
+  let lastErrorMessage = '上游未返回内容'
+
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    if (attempt > 0) await new Promise(resolve => window.setTimeout(resolve, 800 * attempt))
+
+    let collected = ''
+    let failureMessage = ''
+    await streamLocalChatCompletion(options, {
+      onDelta: text => {
+        collected += text
+      },
+      onDone: () => undefined,
+      onError: message => {
+        failureMessage = message
+      },
+    })
+
+    if (!failureMessage) {
+      if (options.signal?.aborted) throw new Error('生成已中止，本次结果不完整')
+      const content = stripThinkBlocks(collected).trim()
+      if (content) return content
+      failureMessage = '上游返回空内容'
+    }
+
+    lastErrorMessage = failureMessage
+    if (!RETRIABLE_UPSTREAM.test(lastErrorMessage) || attempt === MAX_ATTEMPTS - 1) break
+  }
+
+  throw new Error(lastErrorMessage)
 }
 
 /** 拉取供应商可用模型清单（GET {base}/models，OpenAI 兼容形状） */
