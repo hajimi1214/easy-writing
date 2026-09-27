@@ -129,15 +129,10 @@ import {
   getLocalWorkflowTaskStatus as getWorkflowTaskStatusApi,
 } from '@/storage/local-workflow'
 import { polishLocalWorkflowParagraph as polishWorkflowParagraphApi } from '@/utils/local-workflow-control'
-import { generateLocalWorkflowBook as generateWorkflowBookApi } from '@/utils/local-workflow-control'
 import {
   listLocalCharacters,
-  addLocalCharacter,
-  updateLocalCharacter,
   getLocalWorldSettingTree,
 } from '@/storage/local-reference'
-import { deleteLocalReferenceDoc, mutateDoc, nextLocalId } from '@/storage/local-reference-store'
-import { updateLocalBookData as updateLocalBookApi } from '@/storage/local-book-bridge'
 import type { Book, Character, WorldSetting, WorldSettingTreeFolder } from '@/types'
 import type { EntityHighlightItem } from './extends/EntityHighlightExtension'
 import type { IssueHighlightItem } from './extends/IssueHighlightExtension'
@@ -1624,190 +1619,7 @@ const scheduleOrdinaryWorkflowSafetyRefresh = () => {
   }, 5000)
 }
 
-// [写作角色种子] 一次性把 10 张创作页角色卡写入本地书库角色（同名覆盖更新为完整版，不存在才新增）
-async function syncWritingCharactersSeed(bookId: string) {
-  try {
-    if (!bookId || !isLocalEntityId(bookId)) return
-    const flagKey = `ew-writing-chars-${bookId}-v2`
-    try { if (localStorage.getItem(flagKey)) return } catch { /* ignore */ }
-    const seed = await (await fetch('/seed-volume1.json')).json()
-    const list = Array.isArray(seed?.writingCharacters) ? seed.writingCharacters : []
-    if (!list.length) return
-    const existing = await listLocalCharacters({ bookId, page: 1, size: 500 })
-    const existingList = existing?.data?.list || []
-    const existingByName = new Map(existingList.map((c: Character) => [String(c.name), c]))
-    let added = 0
-    let updated = 0
-    for (const item of list) {
-      const hit = existingByName.get(String(item.name))
-      if (hit && hit.id !== undefined) {
-        await updateLocalCharacter({ id: hit.id, ...item })
-        updated++
-      } else {
-        await addLocalCharacter({ bookId, ...item })
-        added++
-      }
-    }
-    try { localStorage.setItem(flagKey, '1') } catch { /* ignore */ }
-    console.log(`[写作角色种子] 新增 ${added} / 更新 ${updated} 个角色 (bookId=${bookId})`)
-  } catch (e) {
-    console.warn('[写作角色种子] 失败:', e)
-  }
-}// [清理旧书参考数据] 删除已回收旧书（卖棺长生）残留在参考库里的设定/角色数据，不影响当前书
-async function cleanOldReferenceSeed() {
-  try {
-    const oldBookIds = ['-1788267873076009', '-1788267684506011']
-    for (const id of oldBookIds) {
-      const flagKey = `ew-clean-old-ref-${id}-v1`
-      try { if (localStorage.getItem(flagKey)) continue } catch { /* ignore */ }
-      await deleteLocalReferenceDoc(id)
-      try { localStorage.setItem(flagKey, '1') } catch { /* ignore */ }
-      console.log(`[清理旧书参考数据] 已清除 bookId=${id}`)
-    }
-  } catch (e) {
-    console.warn('[清理旧书参考数据] 失败:', e)
-  }
-}
-/** seed-volume1.json 里世界观分组的形状（给无类型的 JSON 一个可校验的壳） */
-interface SeedWorldSettingGroup { title: string; sortNo: number }
-/** seed-volume1.json 里世界观条目的形状 */
-interface SeedWorldSettingItem {
-  groupTitle?: string
-  name: string
-  type?: number
-  detail?: string
-  sortNo: number
-}
-
-// [写作世界观种子] 用 seed 中的 15 条新设定+5 分组原子替换创作页世界观设定（本地书库）
-async function syncWritingWorldSeed(bookId: string) {
-  try {
-    if (!bookId || !isLocalEntityId(bookId)) return
-    const flagKey = `ew-writing-world-${bookId}-v1`
-    try { if (localStorage.getItem(flagKey)) return } catch { /* ignore */ }
-    const seed = await (await fetch('/seed-volume1.json')).json()
-    const groups: SeedWorldSettingGroup[] = Array.isArray(seed?.writingWorldSettingGroups)
-      ? seed.writingWorldSettingGroups
-      : []
-    const items: SeedWorldSettingItem[] = Array.isArray(seed?.writingWorldSettings) ? seed.writingWorldSettings : []
-    if (!groups.length || !items.length) return
-    await mutateDoc(bookId, doc => {
-      const groupIdByName = new Map<string, number>()
-      doc.worldSettingGroups = groups.map(g => {
-        const id = nextLocalId()
-        groupIdByName.set(String(g.title), id)
-        return { id, bookId: String(bookId), title: g.title, sortNo: g.sortNo }
-      })
-      doc.worldSettings = items.map(it => ({
-        id: nextLocalId(),
-        bookId: String(bookId),
-        groupId: groupIdByName.get(String(it.groupTitle)) ?? null,
-        name: it.name,
-        type: it.type ?? 5,
-        detail: it.detail ?? '',
-        imageUrl: '',
-        relatedChapterIds: [],
-        sortNo: it.sortNo,
-      }))
-      return doc
-    })
-    try { localStorage.setItem(flagKey, '1') } catch { /* ignore */ }
-    console.log(`[写作世界观种子] 已写入 ${groups.length} 分组 / ${items.length} 条设定 (bookId=${bookId})`)
-  } catch (e) {
-    console.warn('[写作世界观种子] 失败:', e)
-  }
-}
 watch(ordinaryWorkflowStructureLocked, scheduleOrdinaryWorkflowSafetyRefresh)
-
-// —— 自动生文：失败任务每次刷新都自动恢复（run -1788324636031001）——
-const WORKFLOW_RUN_ID = -1788324636031001
-const WORKFLOW_RESTART_FLAG = 'ew-writing-restart--1788349887985001-v4'
-let workflowAutoResumeAttempted = false
-async function autoResumeWorkflowBookGeneration() {
-  // 内存标记：仅本页面加载周期内防重复；刷新页面会重新尝试恢复失败任务
-  if (workflowAutoResumeAttempted) return
-  workflowAutoResumeAttempted = true
-  try {
-    console.log('[自动生文] 开始检查整本自动生文恢复…')
-    // 1) 先把书关联到 run，保证任何入口都能识别工作流
-    const bookId = String(route.params.bookId || '')
-    if (bookId) {
-      try {
-        const detail = await getLocalLibraryStorage().getLocalBookDetail(Number(bookId))
-        const gi = detail?.globalInstruction
-        const giObj = (typeof gi === 'object' && gi) ? gi : (typeof gi === 'string' && gi ? JSON.parse(gi) : {})
-        if (!giObj || Number(giObj.workflowRunId || 0) !== WORKFLOW_RUN_ID) {
-          await updateLocalBookApi({
-            id: Number(bookId),
-            globalInstruction: { ...(giObj || {}), workflowRunId: WORKFLOW_RUN_ID },
-          })
-          console.log('[自动生文] 已将书关联到工作流 run')
-        }
-      } catch (e) { console.warn('[自动生文] 写书关联失败:', e) }
-    }
-    // 2) 读取 run 状态，恢复或新建任务
-    const run = await getWorkflowInfoApi(WORKFLOW_RUN_ID)
-    // 固定工作流模型为 deepseek-v4-pro-0813（内部id），防止被"跟随偏好"清空后兜底到 glm 触发 504
-    const FIXED_WORKFLOW_MODEL = '-1788265602148001'
-    if (run?.data && String(run.data.modelCode || '') !== FIXED_WORKFLOW_MODEL) {
-      try {
-        const { updateLocalWorkflowRuntimeConfig } = await import('@/storage/local-workflow')
-        await updateLocalWorkflowRuntimeConfig({
-          runId: WORKFLOW_RUN_ID,
-          modelCode: FIXED_WORKFLOW_MODEL,
-          effectiveScope: 'next_chapter',
-        })
-        run.data.modelCode = FIXED_WORKFLOW_MODEL
-        console.log('[自动生文] 已校正工作流模型为 deepseek-v4-pro-0813')
-      } catch (me) { console.warn('[自动生文] 校正模型失败:', me) }
-    }
-    const task = run?.data?.activeTask || run?.data?.latestBookTask || null
-    console.log('[自动生文] run.status=', run?.data?.status, '| task=', task ? `${task.id}:${task.status}` : '无')
-    if (task && ['queued', 'running', 'review_required'].includes(String(task.status))) {
-      console.log('[自动生文] 已有进行中任务，交给页面接管')
-      return
-    }
-    let resumedTaskId = Number(task?.id || 0)
-    if (task && ['paused', 'interrupted', 'failed'].includes(String(task.status))) {
-      // 失败/停驻任务：每次刷新都自动恢复（不再受 localStorage 标记限制）
-      try {
-        const { resumeLocalWorkflowTask } = await import('@/utils/local-workflow-control')
-        const resumeResult = await resumeLocalWorkflowTask({ taskId: Number(task.id) })
-        resumedTaskId = Number(task.id)
-        console.log('[自动生文] 已自动恢复失败/停驻任务', task.id, '->', resumeResult?.data?.status)
-        ElMessage.success(`已自动恢复生成（任务状态：${resumeResult?.data?.status}）`)
-      } catch (resumeErr) {
-        const msg = resumeErr instanceof Error ? resumeErr.message : String(resumeErr)
-        console.error('[自动生文] resume 抛错:', resumeErr)
-        ElMessage.error(`自动恢复失败原因：${msg}`)
-        return
-      }
-    } else if (!task) {
-      // 无任务：仅首次新建整本任务，避免重复
-      if (localStorage.getItem(WORKFLOW_RESTART_FLAG)) return
-      const result = await generateWorkflowBookApi({ runId: WORKFLOW_RUN_ID })
-      const data = result?.data
-      // 返回类型是「任务 | 冲突」联合：带 conflict 字段说明已有任务在跑，此时不重复建任务
-      if (data && 'conflict' in data) return
-      resumedTaskId = Number(data?.id || 0)
-      console.log('[自动生文] 已新建整本生成任务', resumedTaskId)
-      localStorage.setItem(WORKFLOW_RESTART_FLAG, '1')
-    }
-    // 3) 跳转路由绑定任务，让创作页任务面板接管并显示生成进度
-    if (resumedTaskId && Number(resumedTaskId) !== Number(route.query.taskId)) {
-      try {
-        await router.replace({
-          name: 'Writing',
-          params: { bookId: String(bookId || '') },
-          query: { from: 'workflow', runId: String(WORKFLOW_RUN_ID), taskId: String(resumedTaskId) },
-        })
-        console.log('[自动生文] 已跳转路由绑定任务', resumedTaskId)
-      } catch (e) { console.warn('[自动生文] 跳转失败:', e) }
-    }
-  } catch (e) {
-    console.warn('[自动生文] 恢复失败:', e)
-  }
-}
 
 onMounted(() => {
   ordinaryWorkflowSafetyDisposed = false
@@ -1815,10 +1627,6 @@ onMounted(() => {
   document.body.classList.add('writing-page-shell')
   const currentId = route.params.bookId as string
   void openWritingBook(currentId)
-  void syncWritingCharactersSeed(String(currentId))
-  void syncWritingWorldSeed(String(currentId))
-  void cleanOldReferenceSeed()
-  void autoResumeWorkflowBookGeneration()
 
   // 自爆模式监听
   window.addEventListener('keydown', registerActivity)
