@@ -31,7 +31,11 @@ import type { WorkflowQualityIssue } from '@/types/workflow'
 import { useAiModelStore } from '@/stores/ai-model'
 import { saveLocalAiModel, sceneOfGroup } from '@/storage/local-ai-models'
 import { resolveReviewModelCode, shouldPreviewFix } from '@/utils/local-workflow-writer'
-import { GATE_THIRD_MODE_OPTIONS, resolveGateThirdMode } from '@/utils/self-check-mode'
+import {
+  DEFAULT_GATE_THIRD_MODE,
+  GATE_THIRD_MODE_OPTIONS,
+  resolveGateThirdMode,
+} from '@/utils/self-check-mode'
 import type { LocalWorkflowRun } from '@/storage/local-workflow'
 
 const filler = '他走进院子，脚步很轻。'.repeat(140) // 1540 个中文字，跨过字数下限
@@ -670,10 +674,17 @@ describe('闸三 · 三档开关', () => {
   const chaptersWithRecord = (record: Record<string, unknown> | null) =>
     [{ planMeta: record ? { qualityFix: record } : {} }] as unknown as LocalChapter[]
 
-  it('默认档是「只评审不改稿」：空配置与脏值都不落到 fix', () => {
-    expect(resolveGateThirdMode(null)).toBe('review')
-    expect(resolveGateThirdMode({})).toBe('review')
-    expect(resolveGateThirdMode({ selfCheckMode: '乱写的值' })).toBe('review')
+  it('默认档是「评审后自动改稿」：从没表过态的书走自动改稿', () => {
+    expect(resolveGateThirdMode(null)).toBe('fix')
+    expect(resolveGateThirdMode({})).toBe('fix')
+    expect(resolveGateThirdMode({ selfCheckMode: '乱写的值' })).toBe('fix')
+  })
+
+  it('默认档改成 fix 后，旧数据的「只评审」不能被悄悄升级成改稿', () => {
+    // criticEnabled:true 是旧版的"评审开、改稿关"，语义就是 review，绝不能跳到 fix
+    expect(resolveGateThirdMode({ criticEnabled: true })).toBe('review')
+    expect(resolveGateThirdMode({ autoFix: false })).toBe('review')
+    expect(resolveGateThirdMode({ criticEnabled: true, writingRules: '随便写点什么' })).toBe('review')
   })
 
   it('selfCheckMode 三档直读，且新键在场时旧键不再抢权', () => {
@@ -692,8 +703,9 @@ describe('闸三 · 三档开关', () => {
   })
 
   it('界面选项把默认档排第一，三档齐备', () => {
-    expect(GATE_THIRD_MODE_OPTIONS.map(item => item.value)).toEqual(['review', 'fix', 'off'])
-    expect(GATE_THIRD_MODE_OPTIONS[0].label).toContain('不改稿')
+    expect(GATE_THIRD_MODE_OPTIONS.map(item => item.value)).toEqual(['fix', 'review', 'off'])
+    expect(GATE_THIRD_MODE_OPTIONS[0].value).toBe(DEFAULT_GATE_THIRD_MODE)
+    expect(GATE_THIRD_MODE_OPTIONS[0].label).toBe('评审后自动改稿')
   })
 
   it('fix 档只在「从没试跑过」时试跑一次，不会永远停在试跑（死锁回归）', () => {
@@ -714,5 +726,78 @@ describe('闸三 · 三档开关', () => {
       config: { autoFix: 'dry' },
       orderedChapters: chaptersWithRecord({ applied: true }),
     })).toBe(true)
+  })
+})
+
+
+// ---------------------------------------------------------------------------
+// 闸一 · 《流白》AI 味手册规则包（05-liubai-ai-flavor.json）
+//
+// 来源：C:\Users\30317\Desktop\Liubai_AI_Writing_Guide.docx（V1.0 / 2026-09-27）。
+// 作者定档：① 规则每次生成都生效；② 命中交给模型修复 —— 所以硬禁词必须是 P1
+// （quality-fixer 只吃 P0/P1）且 fix 里带上 §2.5 的替换方向，否则模型无从下手。
+// ---------------------------------------------------------------------------
+describe('闸一 · 《流白》AI 味手册规则包', () => {
+  const BAN_SAMPLE = '流白端着杯子，没有喝。他攥着那枚铜钱，指节泛白，眸光微沉。'
+  const SENTENCE_SAMPLE = [
+    '他不知道，这一次推门进去会发生什么。',
+    '真正的风暴才刚刚开始。',
+    '并非他不愿说，而是不能说。',
+    '这一刻，他终于明白了。',
+  ].join('\n')
+
+  it('规则包按手册 §2 全量落地（词库 A/B/C + 模板句 + 替换表）', () => {
+    expect(qualityRulesMeta.liubaiWordCount).toBeGreaterThanOrEqual(45)
+    expect(qualityRulesMeta.liubaiSentenceCount).toBeGreaterThanOrEqual(9)
+  })
+
+  it('生成前注入：本章约束带上手册硬禁词与 §2.5 替换表', () => {
+    const block = describeChapterConstraints(5)
+    expect(block).toContain('《流白》AI 味硬禁')
+    expect(block).toContain('眸光')
+    expect(block).toContain('指节泛白')
+    expect(block).toContain('睥睨')
+    expect(block).toContain('普通动词优先替换表')
+    expect(block).toContain('看、看了看、看向')
+    expect(block).toContain('绝对禁区')
+  })
+
+  it('生成后检测：词库按 A/B/C 汇总，定级 P1 且不作废整章', () => {
+    const issues = lintChapterWithRules({ text: `${filler}\n${BAN_SAMPLE}`, chapterNo: 5 })
+    const banned = issues.filter(issue => issue.code.startsWith('LIUBAI-BAN-'))
+    expect(banned.map(issue => issue.code).sort()).toEqual(['LIUBAI-BAN-A', 'LIUBAI-BAN-B'])
+    for (const issue of banned) {
+      expect(issue.grade).toBe('P1')
+      expect(issue.blocking).toBe(false)
+      expect(String(issue.fix)).toContain('§2.5')
+    }
+    expect(String(banned.find(issue => issue.code === 'LIUBAI-BAN-A')?.fix)).toContain('看、看了看、看向')
+  })
+
+  it('生成后检测：手册 §2.4 模板句逐条命中', () => {
+    const codes = lintChapterWithRules({ text: `${filler}\n${SENTENCE_SAMPLE}`, chapterNo: 5 })
+      .map(issue => issue.code)
+    expect(codes).toEqual(expect.arrayContaining([
+      'LB-UNKNOWN-THIS-TIME',
+      'LB-STORM-BEGIN',
+      'LB-NOT-BUT-VARIANT',
+      'LB-FINALLY-UNDERSTAND',
+    ]))
+  })
+
+  it('命中后进施工单：模型能拿到「改哪、改成什么」', () => {
+    const issues = lintChapterWithRules({ text: `${filler}\n${BAN_SAMPLE}`, chapterNo: 5 })
+    expect(buildFixOrderText(issues)).toContain('手册硬禁词库A')
+    expect(selectFixableIssues(issues).some(issue => issue.code.startsWith('LIUBAI-BAN-'))).toBe(true)
+  })
+
+  it('CLI 与平台必须共用同一份规则包（自检/rules 要同步）', () => {
+    const platform = readFileSync(
+      resolve(process.cwd(), 'src', 'config', 'quality-rules', '05-liubai-ai-flavor.json'),
+      'utf8'
+    )
+    const cliPath = resolve(process.cwd(), '..', '自检', 'rules', '05-liubai-ai-flavor.json')
+    if (!existsSync(cliPath)) return
+    expect(readFileSync(cliPath, 'utf8')).toBe(platform)
   })
 })

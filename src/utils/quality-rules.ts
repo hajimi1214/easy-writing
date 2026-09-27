@@ -20,6 +20,7 @@ import styleBan from '@/config/quality-rules/01-style-ban.json'
 import pacing from '@/config/quality-rules/02-pacing.json'
 import entities from '@/config/quality-rules/03-entities.json'
 import artifactsRule from '@/config/quality-rules/04-artifacts.json'
+import liubaiFlavor from '@/config/quality-rules/05-liubai-ai-flavor.json'
 
 // ---------------------------------------------------------------------------
 // 类型
@@ -84,6 +85,27 @@ const style = styleBan as unknown as {
   patterns: StylePattern[]
   densityMetrics: DensityMetric[]
   behavioralPatterns: string[]
+}
+/**
+ * 《流白》AI 味手册规则包（05-liubai-ai-flavor.json）：
+ * 硬禁词库 A/B/C + §2.4 模板句 + §2.5 替换表 + §1 的 C/D 层结构症状 + 附录 A/B。
+ */
+interface LiubaiWordGroup {
+  label: string
+  manual: string
+  items: string[]
+}
+const liubai = liubaiFlavor as unknown as {
+  severity: QualityGrade
+  dimension: string
+  words: Record<string, LiubaiWordGroup>
+  conditionalWords: Array<{ term: string; note?: string; minHits?: number }>
+  sentences: StylePattern[]
+  replacements: Array<{ from: string[]; to: string }>
+  sentenceFix: string
+  structuralSymptoms: Record<string, unknown>
+  absoluteForbidden: string[]
+  finalChecklist30s: string[]
 }
 const pacingRule = pacing as unknown as {
   wordCount: { target: { min: number; max: number }; blockBelowRatio: number; noticeAboveRatio: number }
@@ -210,6 +232,41 @@ const describeStyleConstraints = () => {
   ].join('\n')
 }
 
+/**
+ * 《流白》手册约束块（生成前注入）。对应手册 §16：「把硬禁词表和总规则放进全局写作规则」。
+ * 与 checkLiubaiFlavor() 共用同一份 05-liubai-ai-flavor.json ——
+ * 判它不合格的每一条，都已经在生成前明确告诉过模型，不会出现「判错却没提醒」。
+ */
+const describeLiubaiConstraints = (): string => {
+  const groups = Object.entries(liubai.words || {}).map(
+    ([key, group]) => `· 硬禁词库${key}（${group.label}）：${(group.items || []).join('、')}`
+  )
+  const conditional = (liubai.conditionalWords || [])
+    .map(item => `${item.term}（${item.note || ''}）`)
+    .join('、')
+  const replacements = (liubai.replacements || [])
+    .map(row => `${(row.from || []).join('/')} → ${row.to}`)
+    .join('；')
+  const structural = Object.values(liubai.structuralSymptoms || {})
+    .filter((list): list is string[] => Array.isArray(list))
+    .flat()
+    .map(item => `· ${item}`)
+  return [
+    '【《流白》AI 味硬禁（手册 V1.0 §2，命中即改；不得用近义词绕过）】',
+    ...groups,
+    conditional ? `· 条件禁词：${conditional}` : '',
+    `· 禁模板句/模板钩子：${(liubai.sentences || []).map(item => item.label).join('；')}`,
+    `· 普通动词优先替换表：${replacements}`,
+    '【绝对禁区（手册附录 A）】',
+    ...(liubai.absoluteForbidden || []).map(item => `· ${item}`),
+    '【长篇结构红线（手册 §1 的 D 层：这些比用词更致命）】',
+    ...structural,
+    '【章末自检（手册附录 B）】定稿前逐项过一遍，仍不合格就继续改，不要交稿。',
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
 /** 拼成本章的「禁忌与约束」文本块，直接塞进提示词素材 */
 export const describeChapterConstraints = (chapterNo: number): string => {
   if (!Number.isFinite(chapterNo) || chapterNo <= 0) return ''
@@ -235,6 +292,7 @@ export const describeChapterConstraints = (chapterNo: number): string => {
   }
 
   lines.push(describeStyleConstraints())
+  lines.push(describeLiubaiConstraints())
 
   const chars = pacing.wordCount.target
   lines.push(`【篇幅】本章目标 ${chars.min}–${chars.max} 字`)
@@ -383,6 +441,94 @@ const checkStyle = (text: string): WorkflowQualityIssue[] => {
       message: `引号混用：双引号 ${doubleQuote} 处 / 书名号 ${cornerQuote} 处。全书只允许一种`,
       fix: '统一为一套引号',
       metrics: { doubleQuote, cornerQuote },
+    }))
+  }
+
+  return issues
+}
+
+/**
+ * 手册 §2.5「普通动词优先替换表」查询：命中词 → 建议改法。
+ * 用互相包含判断（「眸光」与「眸光落在」、「喉结」与「喉结滚动」共享词根），
+ * 拼进施工单后模型才知道该往哪改，而不是只被告知「这里不合格」。
+ */
+const liubaiReplacement = (term: string): string => {
+  for (const row of liubai.replacements || []) {
+    if ((row.from || []).some(item => item.includes(term) || term.includes(item))) return row.to
+  }
+  return ''
+}
+
+/**
+ * 《流白》AI 味手册硬禁（闸一）。逐条对应手册 §2.1–§2.4，数据源 05-liubai-ai-flavor.json。
+ *
+ * 定级 P1：作者要求「命中交给模型修复」，而 quality-fixer 只吃 P0/P1（P2 不自动改），
+ * 所以本包一律 P1 且 blocking=false —— 能进施工单，但不作废整章。
+ * 三个词库各汇总成一条：手册的词成组出现，逐词报会把质检面板刷成流水账。
+ */
+const checkLiubaiFlavor = (text: string): WorkflowQualityIssue[] => {
+  const issues: WorkflowQualityIssue[] = []
+
+  for (const [key, group] of Object.entries(liubai.words || {})) {
+    const hits = (group.items || [])
+      .map(term => ({ term, count: countOccurrences(text, term) }))
+      .filter(item => item.count > 0)
+    if (!hits.length) continue
+    const total = hits.reduce((sum, item) => sum + item.count, 0)
+    const plan = hits
+      .map(item => {
+        const to = liubaiReplacement(item.term)
+        return to ? `${item.term}→${to}` : `${item.term}（直接删或换普通词）`
+      })
+      .join('；')
+    issues.push(toIssue({
+      code: `LIUBAI-BAN-${key}`,
+      dimension: liubai.dimension || 'AI味',
+      grade: liubai.severity || 'P1',
+      blocking: false,
+      message: `手册硬禁词库${key}·${group.label}命中 ${total} 处：${hits.map(item => `${item.term}×${item.count}`).join('、')}`,
+      quotes: hits.map(item => occurrenceEvidence(text, item.term)).filter(Boolean),
+      fix: `按手册 §2.5 普通动词优先替换表改：${plan}。手册原话：命中即改，不得用近义词绕过。`,
+      metrics: { total, kinds: hits.length },
+    }))
+  }
+
+  // 手册 §2.3 括号里标了「泛滥时/无必要时」的词：够量才算问题
+  const conditionalHits = (liubai.conditionalWords || [])
+    .map(item => ({ ...item, count: countOccurrences(text, item.term) }))
+    .filter(item => item.count >= (item.minHits && item.minHits > 1 ? item.minHits : 1))
+  if (conditionalHits.length) {
+    issues.push(toIssue({
+      code: 'LIUBAI-BAN-CONDITIONAL',
+      dimension: liubai.dimension || 'AI味',
+      grade: 'P2',
+      blocking: false,
+      message: `手册 §2.3 条件禁词超出用量：${conditionalHits.map(item => `${item.term}×${item.count}`).join('、')}`,
+      quotes: conditionalHits.map(item => occurrenceEvidence(text, item.term)).filter(Boolean),
+      fix: '手册：清冽/凛冽泛滥时禁用、氤氲无必要时禁用。换成具体描写或直接删。',
+      metrics: { total: conditionalHits.reduce((sum, item) => sum + item.count, 0) },
+    }))
+  }
+
+  // 手册 §2.4 硬禁模板句 / 模板钩子
+  for (const pattern of liubai.sentences || []) {
+    let found: RegExpMatchArray | null = null
+    try {
+      found = text.match(new RegExp(pattern.regex, 'g'))
+    } catch {
+      continue
+    }
+    const minHits = pattern.minHits && pattern.minHits > 1 ? pattern.minHits : 1
+    if (!found?.length || found.length < minHits) continue
+    issues.push(toIssue({
+      code: pattern.id,
+      dimension: pattern.dimension || liubai.dimension || 'AI味',
+      grade: pattern.severity || 'P1',
+      blocking: false,
+      message: `${pattern.label}：命中 ${found.length} 处${minHits > 1 ? `（阈值 ≥${minHits}）` : ''}`,
+      quotes: found.map(item => clip(item, 50)),
+      fix: liubai.sentenceFix,
+      metrics: { hits: found.length },
     }))
   }
 
@@ -742,6 +888,7 @@ export const lintChapterWithRules = (params: {
   return [
     ...checkSpoilerBans(text, params.chapterNo),
     ...checkStyle(text),
+    ...checkLiubaiFlavor(text),
     ...checkDensityMetrics(text),
     ...checkPacing(text, params.targetWords),
     ...checkArtifactBalance(text, params.chapterNo, params.artifactTotals),
@@ -764,6 +911,11 @@ export const qualityRulesMeta = {
   artifactCount: artifactCfg.artifacts.length,
   chapters: entityRule.totalChapters,
   wordTarget: pacingRule.wordCount.target,
+  liubaiWordCount: Object.values(liubai.words || {}).reduce(
+    (sum, group) => sum + (group.items || []).length,
+    0
+  ),
+  liubaiSentenceCount: (liubai.sentences || []).length,
 }
 
 /** 供平台其余模块复用（字数口径与工作流保持一致） */

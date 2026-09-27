@@ -155,6 +155,7 @@
           </el-form>
 
           <p class="rail-self-check-hint">{{ selfCheckHint }}</p>
+          <p v-if="manualRuleHint" class="rail-self-check-hint">{{ manualRuleHint }}</p>
         </section>
       </template>
     </div>
@@ -188,6 +189,7 @@
 import { computed, onMounted, toRef } from 'vue'
 import type { WorkflowRun, WorkflowRuntimeSettings } from '@/types/workflow'
 import { GATE_THIRD_MODE_OPTIONS, resolveGateThirdMode } from '@/utils/self-check-mode'
+import { qualityRulesMeta } from '@/utils/quality-rules'
 import type { WorkflowRuntimeConfigUpdate } from './rail'
 import {
   createRunConfigReader,
@@ -277,6 +279,17 @@ const selfCheckHint = computed(() => {
     return '完全不跑 AI 评审，最省额度；闸一规则轨与闸二事实账本照常运行。'
   }
   return '每章多一次评审调用，只把问题清单挑出来交给你判断，绝不改动正文。'
+})
+
+/**
+ * 闸一的《流白》AI 味手册包是内置的、不可关的（作者要求每次生成都按它来），
+ * 这里只把「已经装了什么、有多少条」摊开给作者看，省得怀疑规则没生效。
+ */
+const manualRuleHint = computed(() => {
+  const words = qualityRulesMeta.liubaiWordCount ?? 0
+  const sentences = qualityRulesMeta.liubaiSentenceCount ?? 0
+  if (!words && !sentences) return ''
+  return `闸一已内置《流白》AI 味手册：硬禁词 ${words} 个、硬禁模板句 ${sentences} 条。生成前注入约束，生成后逐条核对，命中按 P1 列出并给出手册的替换改法。`
 })
 
 const applyChanges = () => {
