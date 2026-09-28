@@ -103,6 +103,12 @@ export const useAiModelStore = defineStore('ai-model', () => {
     return fallback ? fallback.code : ""
   }
   const loadWorkflowModels = (force = false) => loadGroup('workflow_book', force)
+  /** 建书写作模型：优先使用作者为工作流单独选择的模型，未选时才回落文本默认。 */
+  const ensureWorkflowModel = async (): Promise<string> => {
+    if (!workflowModel.value) await loadGroup('workflow_book')
+    if (workflowModel.value) return workflowModel.value
+    return ensureTextModel()
+  }
   const loadReviewModels = (force = false) => loadGroup('workflow_review', force)
   const loadImageModels = (force = false) => loadGroup('image_generation', force)
   /** 闸三审核模型：未单独配置时返回空串，由调用方回落写作模型 */
@@ -143,6 +149,7 @@ export const useAiModelStore = defineStore('ai-model', () => {
     loadTextModels,
     ensureTextModel,
     loadWorkflowModels,
+    ensureWorkflowModel,
     loadReviewModels,
     ensureReviewModel,
     loadImageModels,

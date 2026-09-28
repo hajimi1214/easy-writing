@@ -1,27 +1,138 @@
 {
-  "_note": "人物名册与基础实体表（闸一·规则轨 + 闸二·事实账本的共同底座）。来源：easy-writing/public/seed-volume1.json 的 characters(10)、volumes(7)。用途：①开篇钩子判定（前300字内是否有人物出场）②人物名册越界检查（出现未登记人名需人工确认）③闸二「死人复活」检查的基础。注意：secretOf 字段是闸三评审用的「角色盲区」，卷内不得让该角色表现出已知。",
-  "version": 1,
-  "generatedFrom": "seed-volume1.json",
+  "_note": "人物名册与基础实体表（闸一·规则轨 + 闸二·事实账本的共同底座）。来源：《墨痕长生》新书完整设定资料包。用途：①开篇钩子判定（前 300 字内是否有人物出场）②人物名册越界检查（出现未登记人名需人工确认）③闸二「尚未出场」清单。secretOf 是闸三评审用的「角色盲区」——卷内不得让该角色表现出已知；流白那条最关键：他不知道自己真正活了多久、身世与长生机制，认知边界不能破。",
+  "version": 2,
+  "generatedFrom": "墨痕长生_新书完整设定资料包_easy-writing.md 附录B 角色卡摘要 / §十七—二十 / §四十九 名字与称呼规范",
   "characters": [
-    { "id": "p1", "name": "流白", "aliases": ["掌柜", "流掌柜"], "role": "棺材铺掌柜，长生者", "isProtagonist": true, "secretOf": ["自身身世", "旧名", "力量来源"] },
-    { "id": "p2", "name": "宁墨", "aliases": ["墨丫头"], "role": "孤女，流白的记忆锚点", "secretOf": [] },
-    { "id": "p3", "name": "顾九归", "aliases": ["老顾"], "role": "流白的故人，十世轮回者", "secretOf": [] },
-    { "id": "p4", "name": "宁观山", "aliases": [], "role": "宁墨之父，前调查者", "secretOf": [] },
-    { "id": "p5", "name": "韩照骨", "aliases": [], "role": "外门执事（普通宗门执事，非死生门）", "secretOf": [] },
-    { "id": "p6", "name": "灭口黑影", "aliases": ["黑影", "影子"], "role": "身份成谜的灭口者；实为守门人之一（卷六揭示）", "secretOf": ["守门人身份"] },
-    { "id": "p7", "name": "小满", "aliases": [], "role": "没有户籍的孩子", "secretOf": [] },
-    { "id": "p8", "name": "执灯人", "aliases": [], "role": "上界执灯人，飞升体系维持者", "secretOf": [] },
-    { "id": "p9", "name": "抹史者", "aliases": [], "role": "无名司最高执事", "secretOf": [] },
-    { "id": "p10", "name": "九人旧信", "aliases": [], "role": "当年与流白共同参与封印的九位故人（含顾九归、持棺钉守门人）", "secretOf": [], "isCollective": true }
+    {
+      "id": "p1",
+      "name": "流白",
+      "aliases": [
+        "掌柜",
+        "流掌柜",
+        "小流掌柜",
+        "流道友",
+        "流前辈"
+      ],
+      "role": "西街棺材铺掌柜，不知道自己活了多久的长生者",
+      "isProtagonist": true,
+      "secretOf": [
+        "自身身世",
+        "真正年龄",
+        "长生机制",
+        "旧名",
+        "六十二年前的旧事"
+      ]
+    },
+    {
+      "id": "p2",
+      "name": "沈照月",
+      "aliases": [
+        "照月",
+        "沈姑娘"
+      ],
+      "role": "纸墨铺少女，聪明、好奇、会记录，成长型女主（无隐藏血统）",
+      "secretOf": []
+    },
+    {
+      "id": "p3",
+      "name": "陆安年",
+      "aliases": [],
+      "role": "临死前来买棺的七十多岁老人，六十二年前见过流白",
+      "secretOf": [
+        "六十二年前见过流白"
+      ]
+    },
+    {
+      "id": "p4",
+      "name": "沈砚声",
+      "aliases": [],
+      "role": "沈照月的祖父，纸墨铺老掌柜，曾任县衙抄档，熟旧契与地方档案",
+      "secretOf": []
+    },
+    {
+      "id": "p5",
+      "name": "周六斤",
+      "aliases": [],
+      "role": "义庄看守，熟悉镇上白事与死人去向，嘴碎、现实",
+      "secretOf": []
+    },
+    {
+      "id": "p6",
+      "name": "邢三更",
+      "aliases": [],
+      "role": "在青槐镇周边活动多年的游方风水师，引气修士，持「换名」残法",
+      "secretOf": [
+        "本地案件主使",
+        "换名残法持有者"
+      ]
+    },
+    {
+      "id": "p7",
+      "name": "顾青崖",
+      "aliases": [],
+      "role": "六十二年前曾与流白一起出现在槐坡的女子（第24章才出现名字）",
+      "secretOf": [],
+      "revealAtChapter": 24
+    },
+    {
+      "id": "p8",
+      "name": "晏无终",
+      "aliases": [],
+      "role": "记忆连续体（第七卷才系统揭晓）",
+      "secretOf": [],
+      "revealAtChapter": 367
+    },
+    {
+      "id": "p9",
+      "name": "许成川",
+      "aliases": [],
+      "role": "第一卷出现的引气修士，可命名配角",
+      "secretOf": []
+    }
   ],
   "volumes": [
-    { "id": "v1", "title": "第一卷 槐坡32号", "chapterCount": 30 },
-    { "id": "v2", "title": "死生门", "chapterCount": 36 },
-    { "id": "v3", "title": "百年墨痕", "chapterCount": 34 },
-    { "id": "v4", "title": "无名仙朝", "chapterCount": 32 },
-    { "id": "v5", "title": "飞升", "chapterCount": 32 },
-    { "id": "v6", "title": "归人", "chapterCount": 34 },
-    { "id": "v7", "title": "墨痕", "chapterCount": 30 }
+    {
+      "id": "v1",
+      "title": "第一卷 买棺人",
+      "chapterCount": 36
+    },
+    {
+      "id": "v2",
+      "title": "第二卷 山河旧客",
+      "chapterCount": 60
+    },
+    {
+      "id": "v3",
+      "title": "第三卷 青槐春秋",
+      "chapterCount": 45
+    },
+    {
+      "id": "v4",
+      "title": "第四卷 人间仙门",
+      "chapterCount": 75
+    },
+    {
+      "id": "v5",
+      "title": "第五卷 死生门",
+      "chapterCount": 70
+    },
+    {
+      "id": "v6",
+      "title": "第六卷 断岁遗城",
+      "chapterCount": 80
+    },
+    {
+      "id": "v7",
+      "title": "第七卷 天外旧人",
+      "chapterCount": 90
+    },
+    {
+      "id": "v8",
+      "title": "第八卷 长生尽头",
+      "chapterCount": 80
+    }
   ],
-  "totalChapters": 228
+  "totalChapters": 536,
+  "bookTitle": "墨痕长生",
+  "_rewrite": "v2 已按《墨痕长生》V1.0 角色卡与八卷卷表全量重写；旧项目人物名册与章表已彻底移除。"
 }

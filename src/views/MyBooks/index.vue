@@ -288,6 +288,7 @@ import { Book, BookGroup } from "@/types"
 import { CATEGORY_TAG_MAP } from '@/utils/constants'
 import { useThemeStore } from '@/stores/theme'
 import { getLocalLibraryStorage } from '@/storage/local-library'
+import { runContentCorrections } from '@/utils/draft-corrections'
 
 type SortValue = 'updateTime_DESC' | 'updateTime_ASC' | 'createTime_DESC' | 'wordCount_DESC' | 'wordCount_ASC' | 'title_ASC'
 
@@ -452,6 +453,16 @@ const handleGroupDeleted = (groupId: string) => {
 // 初始化：先并行拉列表与分组渲染首屏，认领检测在列表就绪后异步执行
 onMounted(() => {
   void refreshBooks()
+  // 存量内容修正：一次性、幂等，只认锚点。跑完置标志位，之后不再执行。
+  void runContentCorrections()
+    .then((report) => {
+      if (report.skipped || !report.chapters) return
+      ElMessage.success(
+        `已修正存量内容：${report.chapters} 章 / ${report.applied} 处` +
+          (report.artifacts ? `（另剥离工程残留 ${report.artifacts} 处）` : ''),
+      )
+    })
+    .catch((error) => console.error('[存量修正] 执行失败：', error))
   if (route.query.create === '1' || route.query.create === 'true') {
     handleCreate()
     const nextQuery = { ...route.query }

@@ -10,6 +10,7 @@ import type {
   LocalVolume,
 } from './local-library-types'
 import { countWords } from '@/utils/word-count'
+import { sanitizeChapterText } from '@/utils/chapter-sanitize'
 
 export const LOCAL_USER_ID = 'guest'
 
@@ -314,6 +315,13 @@ export const createLocalImportPreview = (filename: string, payload: LocalParsedB
   }
 }
 
+/** 导出时强制补齐稳定章节编号；目录里存的是裸章名也不会再让解析器错章。 */
+export const formatExportChapterTitle = (chapter: Pick<LocalChapter, 'title' | 'sortNo'>) => {
+  const title = String(chapter.title || '').trim()
+  if (/^第[零一二三四五六七八九十百千万两\d]+章(?:\s|$)/.test(title)) return title
+  return `第${Number(chapter.sortNo || 0)}章${title ? ` ${title}` : ''}`
+}
+
 export const buildLocalTxtExport = async (payload: LocalExportPayload) => {
   const lines: string[] = [
     `书名：${payload.book.title}`,
@@ -324,7 +332,7 @@ export const buildLocalTxtExport = async (payload: LocalExportPayload) => {
     lines.push(volume.title, '')
     const chapters = sortBySortNo(payload.chapters.filter(chapter => String(chapter.volumeId) === String(volume.id)))
     for (const chapter of chapters) {
-      lines.push(chapter.title, '', chapter.textContent || '', '')
+      lines.push(formatExportChapterTitle(chapter), '', sanitizeChapterText(chapter.textContent || ''), '')
     }
   }
   return lines.join('\n')
@@ -336,7 +344,9 @@ export const buildLocalExportPayload = async (book: LocalBook, volumes: LocalVol
     const draft = await storage.getChapterByIdentity(LOCAL_USER_ID, book.id, chapter.id)
     return {
       ...chapter,
-      textContent: draft?.textContent || '',
+      // 导出前净化：清洗只在生成/修复落库那一刻跑过，洗不到在此之前写进库的存量正文。
+      // 少了这一道，第一卷导出的 txt 里就会带着 [P88] 和「您的打分：83/100」。
+      textContent: sanitizeChapterText(draft?.textContent || ''),
       contentJson: draft?.contentJson,
     }
   }))

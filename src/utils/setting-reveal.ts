@@ -1,16 +1,15 @@
 /**
  * 设定素材的剧透闸门（生成前注入约束 · 素材侧）。
  *
- * 为什么需要它：正文提示词的「主要人物 / 力量体系 / 故事线」三块素材，直接取自
- * `public/seed-volume1.json` 的 `characters` / `core.cultivation` / `storylines`，
- * 而那份文件是**全书写完后**的作者视角设定稿 —— 里面写着
- * 「（第七卷才反转点破）」「【写作纪律】：…绝不暴露守门人身份」这类只给作者看的批注，
- * 以及「真相：流白当年留下的守门人」这种一句话捅到底的说明。
+ * 为什么需要它：正文提示词的「主要人物 / 力量体系 / 故事线」三块素材，取自工作流草稿的
+ * 设定快照（`run.summary.workflowSettingUi`，建书时再落到本地设定库）。那份设定是
+ * **按全书写完后**的作者视角整理的 —— 里面会写着「（第七卷才反转点破）」「【写作纪律】：…」
+ * 这类只给作者看的批注，以及「真相：…」这种一句话捅到底的说明。
  *
  * 结果就是自相矛盾：闸一在生成**后**拦「死生门」，提示词却自己先把「死生门」递到模型嘴边。
- * 实测把这份素材直接丢给 `自检/lint.mjs`，能扫出 8 条违规（含 4 条 P0/P1）。
+ * 所以素材侧必须自带一道闸门，而不是指望模型自觉。
  *
- * 两条防线，都是「缺省即安全」：
+ * 三条防线，都是「缺省即安全」：
  *   1) `revealAtChapter` —— 条目级闸门。章号没到的条目整条不注入。
  *      缺省视为始终可见（0），所以旧数据行为不变。
  *   2) `stripAuthorNotes` —— 片段级消毒。剔掉卷次批注、【…】注记、「真相/实为」何句。
@@ -18,7 +17,9 @@
  *      gender / identity / motivation 全部不再注入，作者完全掌控喂进去的那句话。
  *
  * 章号口径与闸一共用：见 `src/config/quality-rules/00-spoiler-ban.json` 的 `volumeRanges`
- * 与各条 `bannedUntilChapter`。改排期改那张表，改可见性改 seed。
+ * 与各条 `bannedUntilChapter`。改排期改那张表，改可见性改设定里的
+ * `revealAtChapter` / `briefBackground`（归一化必须原样透传，见 workflow-adapter 的
+ * `revealGateFields`，以及 tests/self-check-gates.test.ts 的逐章素材泄底扫描）。
  */
 
 type AnyRecord = Record<string, unknown>

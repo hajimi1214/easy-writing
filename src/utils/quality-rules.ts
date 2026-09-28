@@ -145,7 +145,62 @@ const artifactCfg = artifactsRule as unknown as {
 // ---------------------------------------------------------------------------
 const countCJK = (text: string) => (text.match(/[\u4e00-\u9fff]/g) || []).length
 
-const paragraphsOf = (text: string) => text.split(/\n+/).map(s => s.trim()).filter(Boolean)
+/** 按行切分，与 quality-fixer 的 locateParagraphs 同口径——两边算出的「第几段」必须是同一个段。 */
+const paragraphsOf = (text: string) => text.split(/\r?\n/).map(s => s.trim()).filter(Boolean)
+
+/**
+ * 把命中词定位到段号（1 为起点）。
+ *
+ * 规则不填段号，施工单就只剩一条被截断的原句，模型要在几百段正文里靠片段猜位置；
+ * 找错段号会被 applyParagraphPatches 以「锚点不匹配」整批拒绝，而精修失败又不回退整章重写，
+ * 结果就是自检永远修不过。段号是这条链路上唯一的硬坐标。
+ */
+const locateTerms = (text: string, terms: string[], limit = 20): number[] => {
+  const found = new Set<number>()
+  paragraphsOf(text).forEach((paragraph, index) => {
+    if (found.size >= limit) return
+    if (terms.some(term => term && paragraph.includes(term))) found.add(index + 1)
+  })
+  return Array.from(found).sort((a, b) => a - b)
+}
+
+/** 正则定位到段号；非法正则直接放过，不让一条坏规则拖垮整章质检。 */
+const locatePattern = (text: string, source: string, flags = 'g', limit = 20): number[] => {
+  let scan: RegExp
+  try {
+    scan = new RegExp(source, flags.includes('g') ? flags : `${flags}g`)
+  } catch {
+    return []
+  }
+  const found = new Set<number>()
+  paragraphsOf(text).forEach((paragraph, index) => {
+    if (found.size >= limit) return
+    scan.lastIndex = 0
+    if (scan.test(paragraph)) found.add(index + 1)
+  })
+  return Array.from(found).sort((a, b) => a - b)
+}
+
+/** 开头若干字覆盖到第几段（给开篇类规则用）。 */
+const headParagraphs = (text: string, limit: number): number[] => {
+  const result: number[] = []
+  let used = 0
+  paragraphsOf(text).forEach((paragraph, index) => {
+    if (used >= limit) return
+    result.push(index + 1)
+    used += paragraph.length + 1
+  })
+  return result
+}
+
+/** 剧透禁语命中的段号：terms 走字面匹配，patterns 走正则。 */
+const locateBanParagraphs = (text: string, ban: { terms?: string[]; patterns?: string[] }): number[] => {
+  const located = [
+    ...locateTerms(text, (ban.terms || []).filter(term => countOccurrences(text, term) > 0)),
+    ...(ban.patterns || []).flatMap(pattern => locatePattern(text, pattern)),
+  ]
+  return Array.from(new Set(located)).sort((a, b) => a - b)
+}
 
 const clip = (value: string, max = 50) => {
   const t = String(value || '').trim()
@@ -225,7 +280,8 @@ const describeStyleConstraints = () => {
     `· 慎用万能副词与承接词（每千字超过 8 个即算堆砌）：${[...style.fillerAdverbs, ...style.connectors].join('、')}`,
     `· 禁用句式：${style.patterns.map(item => item.label).join('；')}`,
     `· 符号密度上限（按本书自身语料的 p95 定，比这密就不像这本书了）：${densities}`,
-    '· 全书只统一一种引号，不要双引号与「」混用；不要用分割线符号。',
+    '· 正文严禁使用任何对话引号符号（「」『』、弯引号、直引号一律不用），也严禁用冒号引出对白。',
+    '  对白必须写成独立段落：先写一句人物动作或神态并以句号收尾，换行后单独只写那句台词，再换行继续叙事。',
     '【不要写成"标准答案式"文本 —— 这是 AI 味最根本的来源，比用词更致命】',
     ...(style.behavioralPatterns || []).map(item => `· 规避：${item}`),
     '· 反过来：允许说"不知道"、允许话说一半打住、允许推翻自己、允许留一个不回答的问题。人的文字有犹豫和留白。',
@@ -325,6 +381,7 @@ const checkSpoilerBans = (text: string, chapterNo: number): WorkflowQualityIssue
     }
     if (!hits.length) continue
 
+    const paragraphNos = locateBanParagraphs(text, ban)
     const total = hits.reduce((sum, hit) => sum + hit.count, 0)
     const exception = (ban.exceptions || []).find(item => item.chapter === chapterNo)
 
@@ -337,7 +394,8 @@ const checkSpoilerBans = (text: string, chapterNo: number): WorkflowQualityIssue
         blocking: true,
         message: `本章属「${ban.label}」放宽章（允许 ${exception.maxOccurrences} 次），实命中 ${total} 次，超出限制`,
         quotes: hits.map(hit => hit.sample).filter(Boolean),
-        fix: `删减至 ${exception.maxOccurrences} 次以内`,
+        paragraphs: paragraphNos,
+        fix: `删减至 ${exception.maxOccurrences} 次以内，只改命中段落`,
         metrics: { hits: total },
       }))
       continue
@@ -350,7 +408,8 @@ const checkSpoilerBans = (text: string, chapterNo: number): WorkflowQualityIssue
       blocking: ban.severity === 'P0',
       message: `剧透红线越界：「${ban.label}」在本章（第${chapterNo}章）不得出现，禁至第${ban.bannedUntilChapter}章。${ban.rule}`,
       quotes: hits.map(hit => hit.sample).filter(Boolean),
-      fix: '改写为不点破机制的异常感描写，或删去该句',
+      paragraphs: paragraphNos,
+      fix: '改写为不点破机制的异常感描写，或删去该句（只改命中段落）',
       metrics: { hits: total },
     }))
   }
@@ -376,6 +435,7 @@ const checkStyle = (text: string): WorkflowQualityIssue[] => {
       blocking: grade === 'P0',
       message: `命中 AI 味模板短语 ${group.length} 种：${group.map(item => `${item.term}×${item.count}`).join('、')}`,
       quotes: group.map(item => occurrenceEvidence(text, item.term)).filter(Boolean),
+      paragraphs: locateTerms(text, group.map(item => item.term)),
       fix: '黑名单点名「一出现就出戏」。改成具体动作与结果，或直接删',
       metrics: { kinds: group.length, total: group.reduce((sum, item) => sum + item.count, 0) },
     }))
@@ -424,7 +484,8 @@ const checkStyle = (text: string): WorkflowQualityIssue[] => {
       blocking: pattern.severity === 'P0',
       message: `${pattern.label}：命中 ${found.length} 处${minHits > 1 ? `（阈值 ≥${minHits}）` : ''}`,
       quotes: found.map(item => clip(item, 50)),
-      fix: '改写句式，避免与黑名单句型同构',
+      paragraphs: locatePattern(text, pattern.regex, pattern.multiline ? 'gm' : 'g'),
+      fix: '改写句式，避免与黑名单句型同构（只改命中段落）',
       metrics: { hits: found.length, minHits },
     }))
   }
@@ -439,6 +500,7 @@ const checkStyle = (text: string): WorkflowQualityIssue[] => {
       grade: 'P2',
       blocking: false,
       message: `引号混用：双引号 ${doubleQuote} 处 / 书名号 ${cornerQuote} 处。全书只允许一种`,
+      paragraphs: locatePattern(text, '[“”「」]'),
       fix: '统一为一套引号',
       metrics: { doubleQuote, cornerQuote },
     }))
@@ -488,7 +550,8 @@ const checkLiubaiFlavor = (text: string): WorkflowQualityIssue[] => {
       blocking: false,
       message: `手册硬禁词库${key}·${group.label}命中 ${total} 处：${hits.map(item => `${item.term}×${item.count}`).join('、')}`,
       quotes: hits.map(item => occurrenceEvidence(text, item.term)).filter(Boolean),
-      fix: `按手册 §2.5 普通动词优先替换表改：${plan}。手册原话：命中即改，不得用近义词绕过。`,
+      paragraphs: locateTerms(text, hits.map(item => item.term)),
+      fix: `按手册 §2.5 普通动词优先替换表改：${plan}。手册原话：命中即改，不得用近义词绕过。只改命中段落。`,
       metrics: { total, kinds: hits.length },
     }))
   }
@@ -505,6 +568,7 @@ const checkLiubaiFlavor = (text: string): WorkflowQualityIssue[] => {
       blocking: false,
       message: `手册 §2.3 条件禁词超出用量：${conditionalHits.map(item => `${item.term}×${item.count}`).join('、')}`,
       quotes: conditionalHits.map(item => occurrenceEvidence(text, item.term)).filter(Boolean),
+      paragraphs: locateTerms(text, conditionalHits.map(item => item.term)),
       fix: '手册：清冽/凛冽泛滥时禁用、氤氲无必要时禁用。换成具体描写或直接删。',
       metrics: { total: conditionalHits.reduce((sum, item) => sum + item.count, 0) },
     }))
@@ -527,6 +591,7 @@ const checkLiubaiFlavor = (text: string): WorkflowQualityIssue[] => {
       blocking: false,
       message: `${pattern.label}：命中 ${found.length} 处${minHits > 1 ? `（阈值 ≥${minHits}）` : ''}`,
       quotes: found.map(item => clip(item, 50)),
+      paragraphs: locatePattern(text, pattern.regex),
       fix: liubai.sentenceFix,
       metrics: { hits: found.length },
     }))
@@ -542,6 +607,8 @@ const checkPacing = (text: string, targetWords?: number): WorkflowQualityIssue[]
   const { min, max } = pacingRule.wordCount.target
   const targetMin = targetWords && targetWords > 0 ? Math.round(targetWords * 0.85) : min
   const targetMax = targetWords && targetWords > 0 ? Math.round(targetWords * 1.2) : max
+  // 真正卡人的那条线来自规则包；提示必须报它，否则作者照着提示补字仍会被拦。
+  const hardMin = Math.round(min * pacingRule.wordCount.blockBelowRatio)
 
   // 多章合订文件做单章字数判定必然误报，跳过
   const isMerged = (text.match(/第\d+章/g) || []).length > 1
@@ -552,7 +619,7 @@ const checkPacing = (text: string, targetWords?: number): WorkflowQualityIssue[]
       dimension: '篇幅',
       grade: 'P0',
       blocking: true,
-      message: `本章 ${chars} 字（中文字计），低于目标下限 ${targetMin} 的 ${Math.round(pacingRule.wordCount.blockBelowRatio * 100)}%，疑似生成中断或提前收尾`,
+      message: `本章 ${chars} 字（中文字计），未达到硬下限 ${hardMin} 字（还差 ${hardMin - chars} 字），不能进入下一章`,
       fix: '重写本章补足剧情，或人工补写后接受',
       metrics: { chars, targetMin },
     }))
@@ -619,6 +686,7 @@ const checkPacing = (text: string, targetWords?: number): WorkflowQualityIssue[]
       blocking: false,
       message: `开篇 ${pacingRule.opening.hookWithinChars} 字内既无人物出场也无对话，疑似景物/设定开场`,
       quotes: [clip(head, 50)],
+      paragraphs: headParagraphs(text, pacingRule.opening.hookWithinChars),
       fix: '把人物动作或异常提到前 300 字内',
       metrics: { hookChars: pacingRule.opening.hookWithinChars },
     }))

@@ -70,6 +70,12 @@ export interface WorkflowRuntimeSettings {
    * 判定见 utils/self-check-mode.ts；闸一（规则轨）与闸二（事实账本）始终开启，不受影响。
    */
   selfCheckMode?: string;
+  /**
+   * 卷间自动接力：'停下等我点继续'（默认，写完一卷收工）/ '自动接着写下一卷'。
+   * 判定见 utils/local-workflow-book.ts 的 parseVolumeRelay；只会放宽「要不要往下写」，
+   * 不会替作者决定写几卷——认不出取值一律按「停下」处理。
+   */
+  volumeRelay?: string;
 }
 
 export interface WorkflowQualityIssue {
@@ -327,7 +333,7 @@ export interface WorkflowAssistResource {
 }
 
 export interface WorkflowSelectFieldResource {
-  key: 'targetWords' | 'chapterTargetWords' | 'protagonist' | 'storyPerspective' | 'audience';
+  key: 'targetWords' | 'chapterTargetWords' | 'protagonist' | 'storyPerspective' | 'audience' | 'volumeRelay';
   label: string;
   options: string[];
 }
@@ -340,6 +346,7 @@ export interface WorkflowCreationDefaults {
   protagonist?: string;
   storyPerspective?: string;
   audience?: string;
+  volumeRelay?: string;
 }
 
 export interface WorkflowResources {

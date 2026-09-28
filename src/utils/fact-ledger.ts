@@ -50,6 +50,15 @@ export interface ChapterLedger {
   characters: string[]
   /** 章末节选：下一章开头要接得住 */
   tail: string
+  /** 死亡、离场、受伤等跨章状态句，防止人物无解释复活或瞬移。 */
+  stateFacts?: string[]
+  /**
+   * 人物在本章结束时的结构化状态。只记录正文有明确证据的状态，供后章做确定性连续性校验；
+   * 例如上一章明确“邢三更死了”，下一章却直接“邢三更醒过来”，平台必须先拦住。
+   */
+  characterStates?: Record<string, CharacterStateClaim>
+  /** 跨章累计用的机械反应句式计数，避免每章单看不超标、合起来却满篇同一节拍。 */
+  styleTics?: Record<string, number>
   /**
    * 本章「可数物件」的**明确新增**数（键=04-artifacts.json 的 key）。
    * 只在正文带取得动词、且非指代时计数 —— 裸列举与「那五枚」都不算，宁可少记。
@@ -63,6 +72,73 @@ export interface ChapterLedger {
    */
   artifactClaims?: Record<string, number>
   updatedAt: string
+}
+
+const STYLE_TIC_PATTERNS: Record<string, RegExp> = {
+  '没动/没有动': /没动|没有动/g,
+  '流白点头': /流白点头|流白点了点头/g,
+  '停了一下': /停了一下/g,
+  '沉默回应': /没再说|没再问|没说话|没接话/g,
+}
+
+export const scanStyleTics = (text: string): Record<string, number> =>
+  Object.fromEntries(Object.entries(STYLE_TIC_PATTERNS).map(([label, regex]) => {
+    regex.lastIndex = 0
+    return [label, (String(text || '').match(regex) || []).length]
+  }))
+
+export type CharacterState = 'dead' | 'alive' | 'injured' | 'missing'
+
+export interface CharacterStateClaim {
+  state: CharacterState
+  evidence: string
+}
+
+const STATE_PATTERNS: Array<{ state: CharacterState; regex: RegExp }> = [
+  { state: 'dead', regex: /(?:死了|已死|身死|断气|咽气|毙命|死亡|没了呼吸|没了鼻息|尸体|遗体)/ },
+  { state: 'alive', regex: /(?:醒来|醒了|醒过|睁开眼|开口|说话|站起|起身|走来|走去|活着|复活|还魂|死而复生)/ },
+  { state: 'injured', regex: /(?:受伤|重伤|伤势|伤口|昏迷|昏过去)/ },
+  { state: 'missing', regex: /(?:失踪|不知所踪|被擒|离开了)/ },
+]
+
+/** 扫出正文里每名已登记人物最后一次有明确证据的状态。 */
+export const scanCharacterStateClaims = (text: string): Record<string, CharacterStateClaim> => {
+  const body = String(text || '')
+  const result: Record<string, CharacterStateClaim> = {}
+  for (const character of roster) {
+    if (!character.name || character.isCollective) continue
+    let latest: { index: number; claim: CharacterStateClaim } | null = null
+    const sentenceRegex = new RegExp(`[^。！？\\n]{0,48}${character.name.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}[^。！？\\n]{0,72}[。！？]?`, 'g')
+    for (const match of body.matchAll(sentenceRegex)) {
+      const sentence = asText(match[0])
+      for (const pattern of STATE_PATTERNS) {
+        if (!pattern.regex.test(sentence)) continue
+        const index = Number(match.index || 0) + sentence.search(pattern.regex)
+        if (!latest || index >= latest.index) {
+          latest = { index, claim: { state: pattern.state, evidence: sentence.slice(0, 120) } }
+        }
+      }
+    }
+    if (latest) result[character.name] = latest.claim
+  }
+  return result
+}
+
+/** 取当前章之前每名人物最新的结构化状态。 */
+export const buildLatestCharacterStates = (
+  orderedChapters: LocalChapter[],
+  currentChapterNo: number,
+): Record<string, CharacterStateClaim & { chapterNo: number }> => {
+  const result: Record<string, CharacterStateClaim & { chapterNo: number }> = {}
+  for (const chapter of orderedChapters) {
+    const chapterNo = Number(chapter.sortNo || 0)
+    if (!chapterNo || chapterNo >= Number(currentChapterNo || 0)) continue
+    const states = readChapterLedger(chapter)?.characterStates || {}
+    for (const [name, claim] of Object.entries(states)) {
+      result[name] = { ...claim, chapterNo }
+    }
+  }
+  return result
 }
 
 /** 扫一章正文，得出事实快照（纯字符串匹配，确定性，零 AI） */
@@ -81,6 +157,13 @@ export const scanChapterLedger = (chapter: LocalChapter, text: string): ChapterL
     wordCount: countWords(body),
     characters: rosterNames.filter(name => body.includes(name)),
     tail: asText(body.slice(-LEDGER_TAIL_CHARS)),
+    stateFacts: Array.from(new Set(
+      (body.match(/[^。！？\n]{0,36}(?:死了|已死|身死|断气|咽气|毙命|死亡|重伤|昏迷|失踪|离开|被擒)[^。！？\n]{0,56}[。！？]?/g) || [])
+        .map(asText)
+        .filter(Boolean)
+    )).slice(-12),
+    characterStates: scanCharacterStateClaims(body),
+    styleTics: scanStyleTics(body),
     artifacts: Object.keys(increments).length ? increments : undefined,
     artifactClaims: Object.keys(claims).length ? claims : undefined,
     updatedAt: new Date().toISOString(),
@@ -218,6 +301,25 @@ export const buildLedgerMaterials = async (params: {
 
   const cast = describeCast(written)
   if (cast) materials['人物出场表（未列出的人物不得突然出场）'] = cast
+
+  const stateFacts = written
+    .slice(-RECENT_SUMMARY_COUNT)
+    .flatMap(chapter => (readChapterLedger(chapter)?.stateFacts || []).map(fact => `第${chapter.sortNo}章：${fact}`))
+    .slice(-24)
+  if (stateFacts.length) materials['近期状态事实（后文不得无解释推翻）'] = stateFacts.join('\n')
+
+  const recentStyleTotals: Record<string, number> = {}
+  for (const chapter of written.slice(-RECENT_SUMMARY_COUNT)) {
+    for (const [label, count] of Object.entries(readChapterLedger(chapter)?.styleTics || {})) {
+      recentStyleTotals[label] = (recentStyleTotals[label] || 0) + Number(count || 0)
+    }
+  }
+  const overusedStyle = Object.entries(recentStyleTotals)
+    .filter(([, count]) => count >= 6)
+    .map(([label, count]) => `${label}×${count}`)
+  if (overusedStyle.length) {
+    materials['近期高频反应句式（本章必须换成具体动作或信息推进）'] = overusedStyle.join('、')
+  }
 
   // 可数物件账本：把「截至上一章共 N 枚」写进提示词。数字错是算术错、不是理解错，
   // 与其指望模型自己数对，不如直接把账本摊在它面前（生成前注入 ＞ 生成后检测）。

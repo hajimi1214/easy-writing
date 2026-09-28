@@ -62,6 +62,57 @@ export const parseChineseWordTarget = (value: unknown) => {
   return Math.round(match[2] ? base * 10000 : base)
 }
 
+/**
+ * 解析「单章字数」配置，支持区间写法。
+ *
+ * 为什么要区间：固定一个字数（比如 3000）时，模型会把每一章都写到同一个长度，
+ * 全书章长的标准差被压到几十字，节奏变成一条平线——这是最硬的 AI 味证据。
+ * 给一个区间，让章长跟着情节呼吸：过场章可以短，压不住的章可以长。
+ *
+ * 支持：
+ *   '3000字'        -> { min: 3000, max: 3000 }（兼容旧的单一取值）
+ *   '1800–4200字'   -> { min: 1800, max: 4200 }（也认 - ~ ～ —）
+ *   '3000字±40%'    -> { min: 1800, max: 4200 }
+ */
+export const parseChapterWordRange = (value: unknown): { min: number; max: number } => {
+  const text = asText(value)
+  const single = parseChineseWordTarget(text)
+  if (!single) return { min: 0, max: 0 }
+
+  // 3000字±40%
+  const pct = text.match(/([\d.]+)\s*[%％]/)
+  if (pct) {
+    const p = Math.min(0.9, Math.max(0.05, Number(pct[1]) / 100))
+    if (Number.isFinite(p)) return { min: Math.round(single * (1 - p)), max: Math.round(single * (1 + p)) }
+  }
+
+  // 1800–4200字 / 1800-4200字 / 1800~4200字
+  const range = text.match(/(\d+)\s*[–—\-~～]\s*(\d+)/)
+  if (range) {
+    const lo = Number(range[1])
+    const hi = Number(range[2])
+    if (lo > 0 && hi >= lo) return { min: lo, max: hi }
+  }
+
+  return { min: single, max: single }
+}
+
+/**
+ * 卷间自动接力：写完一卷后是否自动接着写下一卷。
+ * 默认关——写书器原本「一次任务只写一卷」，卷写完就 succeeded 收工，
+ * 要继续下一卷得作者再点一次。开了这个开关才会自动往下卷走。
+ * 取值只认明确的开启写法，认不出就当关：不确定的时候不替作者烧 token。
+ */
+export const parseVolumeRelay = (value: unknown): boolean => {
+  const text = asText(value).trim()
+  if (!text) return false
+  if (/^(开|开启|自动接力|连写|on|true|yes)$/i.test(text)) return true
+  if (/^(关|关闭|停下|off|false|no)$/i.test(text)) return false
+  // 界面里存的是人话选项（如「自动接着写下一卷」），按有没有说「自动/接着/下一卷」判断，
+  // 同时排除「停下等我点继续」这类带否定意味的写法。认不出就当关。
+  return /自动|接着|下一卷|连写/i.test(text) && !/停下|等我|不接|不要|不自动/i.test(text)
+}
+
 const importSettingCharacters = async (bookId: number, setting: JsonRecord) => {
   const characters = Array.isArray(setting.characters) ? setting.characters : []
   for (const [index, item] of characters.entries()) {

@@ -69,6 +69,13 @@ export interface CriticReport {
   error?: string
 }
 
+export interface CriticReviewFocus {
+  /** 修复验收只允许审查这些段落（含平台补入的相邻段）。 */
+  paragraphs: number[]
+  /** 初审已经生成并实际执行的施工单。 */
+  checklist: string
+}
+
 const asText = (value: unknown) => String(value ?? '').trim()
 const clip = (value: string, max = 60) => (value.length > max ? `${value.slice(0, max)}…` : value)
 
@@ -96,6 +103,16 @@ const normalizeOrder = (raw: unknown): CriticOrder | undefined => {
   const detail = asText(holder.detail)
   if (!op || !detail) return undefined
   return { op, target: target || '未指明位置', detail }
+}
+
+/** 从「第7段」「P25-P27」这类施工单目标提取稳定段号；范围异常时宁可不给坐标。 */
+const paragraphsFromTarget = (target: string): number[] | undefined => {
+  const match = String(target || '').match(/(?:第\s*)?(?:P\s*)?(\d+)\s*(?:[-–—至到]\s*(?:P\s*)?(\d+))?\s*段?/i)
+  if (!match) return undefined
+  const start = Number(match[1])
+  const end = Number(match[2] || match[1])
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < start || end - start > 20) return undefined
+  return Array.from({ length: end - start + 1 }, (_, index) => start + index)
 }
 
 /** 施工单 → 一行可执行指令；没有合法 op 就不生成施工单（空话不算问题） */
@@ -132,16 +149,35 @@ export const toCriticIssues = (raw: unknown): { issues: WorkflowQualityIssue[]; 
       code: `CRITIC-${dimension}-${index + 1}`,
       dimension,
       grade,
-      // P2 不阻断：AI 评审本身有主观性，拿它停机等确认比漏报更伤
+      // P0/P1 都是交付硬伤；P2 交给自动修复，但不单独阻断推进。
       severity: grade === 'P2' ? 'low' : 'high',
-      blocking: grade === 'P0',
+      blocking: grade !== 'P2',
       message: asText(holder.message),
       quotes: quote ? [quote] : undefined,
+      paragraphs: order ? paragraphsFromTarget(order.target) : undefined,
       fix: order ? formatOrder(order) : '未给出施工单：请人工判断',
     })
   })
 
   return { issues, orders }
+}
+
+const FORBIDDEN_DIALOGUE_SYMBOLS = /[「」『』“”]/
+const COLON_DIALOGUE = /(?:说|道|问|答|喊|开口|低声|小声|应声|接话)[^：:\n]{0,3}[：:]/
+const FALSE_DIRECT_DIALOGUE_CLAIM = /(?:直接对话|独立成行.{0,12}(?:对话|对白|问句)|对白独立成段).{0,18}(?:违反|违背|禁止|禁用|硬规则)|(?:违反|违背|禁止|禁用|硬规则).{0,18}(?:直接对话|独立成行.{0,12}(?:对话|对白|问句)|对白独立成段)/
+
+/**
+ * AI 审查者偶尔会把“对白独立成段”误读成“禁止直接对白”，甚至把自己用于引用的
+ * 「」当成正文符号。平台以原文为证：原文没有禁用引号或冒号对白时，这类指控不成立。
+ */
+export const filterUnsupportedCriticIssues = (
+  issues: WorkflowQualityIssue[],
+  chapterText: string,
+): WorkflowQualityIssue[] => {
+  const text = String(chapterText || '')
+  const hasForbiddenDialogueFormat = FORBIDDEN_DIALOGUE_SYMBOLS.test(text) || COLON_DIALOGUE.test(text)
+  if (hasForbiddenDialogueFormat) return issues
+  return issues.filter(issue => !FALSE_DIRECT_DIALOGUE_CLAIM.test(String(issue.message || '')))
 }
 
 /**
@@ -153,8 +189,10 @@ export const runChapterCritic = async (params: {
   chapterNo: number
   chapterTitle: string
   chapterText: string
-  /** 与写正文同一份素材；其中"下一章章纲"要剔除——它是给作者的衔接提示，不该拿它挑本章的错 */
+  /** 与写正文同一份素材；包含下一章边界，供审查者判断本章是否越界。 */
   materials: Record<string, string>
+  /** 有值时进入“封闭验收”，不能把复审变成新一轮自由审稿。 */
+  reviewFocus?: CriticReviewFocus
   signal?: AbortSignal
 }): Promise<CriticReport> => {
   const chapterText = String(params.chapterText || '').trim()
@@ -164,12 +202,29 @@ export const runChapterCritic = async (params: {
 
   const materials: Record<string, string> = {}
   for (const [key, value] of Object.entries(params.materials || {})) {
-    if (key.startsWith('下一章章纲')) continue
     if (!String(value || '').trim()) continue
     materials[key] = value
   }
 
   try {
+    const messages = buildChapterCriticMessages({ materials, chapterText })
+    const focusParagraphs = [...new Set((params.reviewFocus?.paragraphs || [])
+      .filter(no => Number.isInteger(no) && no > 0))].sort((a, b) => a - b)
+    if (params.reviewFocus) {
+      const last = messages[messages.length - 1]
+      last.content = [
+        last.content,
+        [
+          '【本次任务是修复验收，不是重新审稿】',
+          '只核验下列施工单是否已消除，以及修复处或紧邻段落是否产生了直接的 P0/P1 硬伤。',
+          '禁止提出初审中没有出现、且与本轮修复没有直接因果关系的新审美意见；禁止把同一问题换一种说法重复立项。',
+          '范围外问题一律不要返回。若施工单已完成且没有直接硬伤，issues 必须返回空数组。',
+          '返回问题时，order.target 必须写成准确的 P数字 或 P数字-P数字，并且只能落在验收范围内。',
+          `【验收范围】${focusParagraphs.length ? focusParagraphs.map(no => `P${no}`).join('、') : '仅核验原施工单，不扩展新问题'}`,
+          `【原施工单】\n${params.reviewFocus.checklist || '无'}`,
+        ].join('\n'),
+      ].join('\n\n')
+    }
     // 走流式：非流式那 60 秒网关硬超时会把思考型模型整个挡在门外，
     // 而评审恰恰是「宁可多想几秒、也要挑对」的场景。
     const raw = await requestLocalChatCompletionStreaming({
@@ -179,7 +234,7 @@ export const runChapterCritic = async (params: {
       temperature: promptTemperature('workflow-writer', 'criticSystem'),
       maxTokens: CRITIC_MAX_TOKENS,
       signal: params.signal,
-      messages: buildChapterCriticMessages({ materials, chapterText }),
+      messages,
     })
 
     const parsed = parseAiJson(raw, ['issues']) as Record<string, unknown> | null
@@ -192,7 +247,9 @@ export const runChapterCritic = async (params: {
       }
     }
 
-    const { issues, orders } = toCriticIssues(parsed.issues)
+    const converted = toCriticIssues(parsed.issues)
+    const issues = filterUnsupportedCriticIssues(converted.issues, chapterText)
+    const orders = converted.orders
     const scores = normalizeScores(parsed.scores)
     const summary = asText(parsed.summary) || undefined
     // 有评分但一条问题都没挑出来 = 正常；连结构都没给对才叫 partial
@@ -209,6 +266,27 @@ export const runChapterCritic = async (params: {
   }
 }
 
+/**
+ * 修复验收的第二道硬边界：即使模型无视提示词重新挑遍全章，平台也只接收
+ * 命中本轮验收段落的问题。没有段号的问题不可精准施工，同样不得开启新一轮修复。
+ */
+export const scopeCriticReportToParagraphs = (
+  report: CriticReport,
+  paragraphs: number[],
+): CriticReport => {
+  if (report.status !== 'available') return report
+  const allowed = new Set((paragraphs || []).filter(no => Number.isInteger(no) && no > 0))
+  const issues = report.issues.filter(issue =>
+    (issue.paragraphs || []).some(no => allowed.has(no))
+  )
+  return {
+    ...report,
+    issues,
+    // orders 只供初审施工使用；验收不会再拿模型的自由文本直接开工。
+    orders: [],
+  }
+}
+
 const gradeRank = (grade?: string) => (grade === 'P0' ? 0 : grade === 'P1' ? 1 : 2)
 
 /**
@@ -219,7 +297,49 @@ export const mergeCriticReport = (
   notice: WorkflowQualityNotice,
   report: CriticReport
 ): WorkflowQualityNotice => {
-  const issues = [...notice.issues, ...report.issues].sort((a, b) => gradeRank(a.grade) - gradeRank(b.grade))
+  const gateIssues: WorkflowQualityIssue[] = []
+  if (report.status !== 'available') {
+    gateIssues.push({
+      source: 'critic',
+      code: 'CRITIC-UNAVAILABLE',
+      dimension: 'AI审查',
+      grade: 'P0',
+      severity: 'high',
+      blocking: true,
+      message: report.error || 'AI审查未返回完整结果，不能确认本章合格',
+      fix: '未给出施工单：重新运行AI审查，审查成功前不得放行',
+    })
+  } else {
+    const scores = report.scores || {}
+    const missing = DIMENSIONS.filter(dimension => !Number.isFinite(scores[dimension]))
+    const low = DIMENSIONS.filter(dimension => Number.isFinite(scores[dimension]) && scores[dimension] < 8)
+    if (missing.length) {
+      gateIssues.push({
+        source: 'critic',
+        code: 'CRITIC-SCORES-MISSING',
+        dimension: 'AI审查',
+        grade: 'P1',
+        severity: 'high',
+        blocking: true,
+        message: `AI审查缺少评分维度：${missing.join('、')}`,
+        fix: '未给出施工单：重新运行AI审查并补齐全部评分维度',
+      })
+    }
+    if (low.length) {
+      gateIssues.push({
+        source: 'critic',
+        code: 'CRITIC-SCORE-BELOW-8',
+        dimension: '综合质量',
+        grade: 'P2',
+        severity: 'low',
+        blocking: false,
+        message: `以下维度低于8分：${low.map(dimension => `${dimension}${scores[dimension]}分`).join('、')}`,
+        fix: '未给出施工单：低分仅作润色提示，必须由具体问题定位后才自动修改',
+      })
+    }
+  }
+  const issues = [...notice.issues, ...report.issues, ...gateIssues]
+    .sort((a, b) => gradeRank(a.grade) - gradeRank(b.grade))
   return {
     ...notice,
     issues,

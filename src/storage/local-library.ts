@@ -12,12 +12,14 @@ import type {
 import {
   buildLocalExportPayload,
   buildLocalTxtExport,
+  formatExportChapterTitle,
   createLocalImportPreview,
   isLocalEntityId,
   LOCAL_USER_ID,
   nowIso,
   parseLocalTxtBook,
 } from './local-library-utils'
+import { sanitizeChapterText, scanChapterArtifacts } from '@/utils/chapter-sanitize'
 import {
   exportLocalBookReference,
   importLocalBookReference,
@@ -332,7 +334,14 @@ export const exportLocalChaptersTxt = async (
     lines.push(volume.title, '')
     for (const chapter of chapters) {
       const draft = await writingStorage.getChapterByIdentity(LOCAL_USER_ID, book.id, chapter.id)
-      lines.push(chapter.title, '', draft?.textContent || '', '')
+      // 章节合并导出同样要过净化：这条路径以前直接吐 textContent，
+      // 于是 [P88]、「您的打分：83/100」这类平台痕迹原样进了 txt。
+      lines.push(
+        formatExportChapterTitle(chapter),
+        '',
+        sanitizeChapterText(draft?.textContent || ''),
+        '',
+      )
       picked += 1
     }
   }
@@ -341,6 +350,39 @@ export const exportLocalChaptersTxt = async (
   const suffix = picked === 1 ? '' : '-章节合并'
   const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' })
   return await saveBlobFile(blob, `${safeFilename(book.title)}-${exportDate}${suffix}.txt`)
+}
+
+/**
+ * 全书正文体检（只读，不写库）。
+ *
+ * 为什么需要它：生成侧的净化只在「落库那一刻」跑过，洗不到此前写进库的章节。
+ * 导出端已经有兜底净化（所以导出物一定是干净的），但库里的脏数据还在，
+ * 编辑器与面板里仍看得到。这个函数把命中清单列出来，供「要不要洗库」决策。
+ */
+export const scanLocalBookArtifacts = async (bookId: number | string) => {
+  const library = getLocalLibraryStorage()
+  const writingStorage = getWritingStorage()
+  const book = await library.getLocalBookDetail(bookId)
+  if (!book) throw new Error('本地作品不存在')
+  const tree = await library.getLocalBookTree(book.id)
+  const chapters = tree.flatMap(volume => volume.children).filter(chapter => !chapter.deletedAt)
+  const hits: { chapterId: number; title: string; count: number; samples: string[] }[] = []
+  let scanned = 0
+  for (const chapter of chapters) {
+    const draft = await writingStorage.getChapterByIdentity(LOCAL_USER_ID, book.id, chapter.id)
+    const text = draft?.textContent || ''
+    if (!text.trim()) continue
+    scanned += 1
+    const found = scanChapterArtifacts(text)
+    if (!found.length) continue
+    hits.push({
+      chapterId: Number(chapter.id),
+      title: chapter.title,
+      count: found.length,
+      samples: found.slice(0, 3).map(item => `第${item.lineNo}行（${item.kind}）${item.text}`),
+    })
+  }
+  return { scanned, dirtyChapters: hits.length, hits }
 }
 
 /**

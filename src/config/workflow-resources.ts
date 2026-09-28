@@ -33,10 +33,11 @@ export const LOCAL_WORKFLOW_RESOURCES: WorkflowResources = {
   ],
   selectFields: [
     { key: 'targetWords', label: '目标字数', options: ['30万字', '50万字', '100万字', '150万字', '200万字以上'] },
-    { key: 'chapterTargetWords', label: '单章字数', options: ['2000字', '3000字', '4000字', '6000字'] },
+    { key: 'chapterTargetWords', label: '单章字数（可填区间，如 1800–4200字）', options: ['1800–4200字', '2200–3800字', '2000字', '3000字', '4000字', '6000字'] },
     { key: 'protagonist', label: '主角性别', options: ['男主', '女主', '双主角'] },
     { key: 'storyPerspective', label: '叙事人称', options: ['第三人称', '第一人称'] },
     { key: 'audience', label: '目标读者', options: ['男频读者', '女频读者', '全频读者'] },
+    { key: 'volumeRelay', label: '写完整卷之后', options: ['停下等我点继续', '自动接着写下一卷'] },
   ],
   creationDefaults: {
     targetWords: '100万字',
@@ -46,5 +47,6 @@ export const LOCAL_WORKFLOW_RESOURCES: WorkflowResources = {
     protagonist: '男主',
     storyPerspective: '第三人称',
     audience: '男频读者',
+    volumeRelay: '停下等我点继续',
   },
 }

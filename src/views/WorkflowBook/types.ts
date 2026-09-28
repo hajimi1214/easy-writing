@@ -29,6 +29,7 @@ export interface WorkflowBaseConfig {
   protagonist: string
   storyPerspective: string
   audience: string
+  volumeRelay?: string
   sellingPoint: string
   modelCode: string
   // 用户显式选择「跟随 AI 偏好设置」（modelCode 为空时区分“未选择”与“跟随偏好”）
@@ -281,7 +282,7 @@ export interface WorkflowSettingCharacter {
   /**
    * 当前阶段安全简介。写了它就**只**注入 `姓名：briefBackground`，
    * gender / identity / motivation 一律不再进提示词 —— 用于卷一就已出场、
-   * 但设定稿里带着后卷真相的人物（流白、黑影、宁观山这类）。
+   * 但设定稿里带着后卷真相的人物（如顾青崖、晏无终这类）。
    */
   briefBackground?: string
 }

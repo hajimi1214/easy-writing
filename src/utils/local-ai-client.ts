@@ -53,6 +53,7 @@ const NON_STREAM_MIN_TOKENS = 2048
  * 它一报温度错，就记住这个模型、摘掉温度重来一次；此后该模型的请求一律不再带温度。
  */
 const temperatureRejectedModels = new Set<string>()
+const thinkingRequiredModels = new Set<string>()
 
 /** 上游在抱怨温度、且本次确实带了温度 → 值得摘掉温度重试（顺带记住这个模型） */
 const rememberTemperatureRejection = (
@@ -67,6 +68,26 @@ const rememberTemperatureRejection = (
   return true
 }
 
+/**
+ * 有些兼容接口允许关闭思考，有些模型（例如 GLM Flash）却强制开启。
+ * 先尊重调用场景的低成本设置；上游明确拒绝后，仅为该模型记忆并开启思考重试，
+ * 避免维护一份很快过期的硬编码模型名单。
+ */
+const rememberThinkingRequirement = (
+  modelCode: string,
+  message: string,
+  enableThinking?: boolean
+): boolean => {
+  const code = String(modelCode || '').trim()
+  if (!code || enableThinking !== false) return false
+  if (!/REASONING_REQUIRED|必须开启深度思考|enable[_ ]thinking/i.test(message)) return false
+  thinkingRequiredModels.add(code)
+  return true
+}
+
+const resolveEnableThinking = (modelCode: string, requested?: boolean) =>
+  thinkingRequiredModels.has(String(modelCode || '').trim()) ? true : requested
+
 /** 按供应商差异拼 chat/completions 请求体：三家怪癖集中在这一处 */
 export const buildChatBody = (params: {
   baseUrl: string
@@ -74,6 +95,7 @@ export const buildChatBody = (params: {
   messages: LocalChatMessageInput[]
   maxTokens?: number
   temperature?: number
+  enableThinking?: boolean
   stream: boolean
 }): Record<string, unknown> => {
   const body: Record<string, unknown> = {
@@ -94,6 +116,9 @@ export const buildChatBody = (params: {
     temperatureRejectedModels.has(String(params.modelCode || '').trim())
   if (params.temperature !== undefined && !dropTemperature) {
     body.temperature = params.temperature
+  }
+  if (params.enableThinking !== undefined) {
+    body.enable_thinking = params.enableThinking
   }
   // 阿里 dashscope：思考型千问走非流式必须显式关思考，否则服务端直接 400
   if (!params.stream && isDashScope(params.baseUrl)) {
@@ -259,6 +284,7 @@ export const requestLocalChatCompletion = async (options: {
   maxTokens?: number
   /** 采样温度（0-2）：来自提示词库逐场景配置；未传用模型服务默认 */
   temperature?: number
+  enableThinking?: boolean
   signal?: AbortSignal
 } & LocalAiSceneTag): Promise<string> => {
   const model = getLocalAiModelSecret(options.modelCode)
@@ -320,6 +346,7 @@ export const requestLocalChatCompletion = async (options: {
               messages: options.messages,
               maxTokens: options.maxTokens || model.maxOutputTokens || undefined,
               temperature: options.temperature,
+              enableThinking: resolveEnableThinking(model.modelCode, options.enableThinking),
               stream: false,
             })
           ),
@@ -328,6 +355,9 @@ export const requestLocalChatCompletion = async (options: {
           const message = await readableHttpError(response)
           if (rememberTemperatureRejection(model.modelCode, message, options.temperature)) {
             return requestLocalChatCompletion({ ...options, temperature: undefined })
+          }
+          if (rememberThinkingRequirement(model.modelCode, message, options.enableThinking)) {
+            return requestLocalChatCompletion({ ...options, enableThinking: true })
           }
           throw new Error(message)
         }
@@ -417,10 +447,15 @@ export interface LocalChatStreamCallbacks {
  */
 export const streamLocalChatCompletion = async (
   options: {
-    modelCode: string
+      modelCode: string
     messages: LocalChatMessageInput[]
     /** 采样温度（0-2）：来自提示词库逐场景配置；未传用模型服务默认 */
     temperature?: number
+    enableThinking?: boolean
+    /** 隐藏思考字符预算；仅用于需要控制成本的流式调用，不会影响可见正文。 */
+    maxReasoningChars?: number
+    /** 开始输出可见正文前允许的最长等待时间。 */
+    maxReasoningMs?: number
     /** 输出上限：需要按场景收口的调用方（评审、改写）显式传；不传用模型配置值 */
     maxTokens?: number
     signal?: AbortSignal
@@ -457,6 +492,14 @@ export const streamLocalChatCompletion = async (
 
   const controller = new AbortController()
   let timedOut = false
+  let reasoningBudgetExceeded = false
+  const reasoningTimer = options.maxReasoningMs
+    ? window.setTimeout(() => {
+        if (collected.trim()) return
+        reasoningBudgetExceeded = true
+        controller.abort()
+      }, options.maxReasoningMs)
+    : null
   let idleTimer: number | null = null
   const clearIdle = () => {
     if (idleTimer) {
@@ -494,6 +537,7 @@ export const streamLocalChatCompletion = async (
           messages: options.messages,
           maxTokens: options.maxTokens || model.maxOutputTokens || undefined,
           temperature: options.temperature,
+          enableThinking: resolveEnableThinking(model.modelCode, options.enableThinking),
           stream: true,
         })
       ),
@@ -502,6 +546,9 @@ export const streamLocalChatCompletion = async (
       const message = await readableHttpError(response)
       if (rememberTemperatureRejection(model.modelCode, message, options.temperature)) {
         return streamLocalChatCompletion({ ...options, temperature: undefined }, callbacks)
+      }
+      if (rememberThinkingRequirement(model.modelCode, message, options.enableThinking)) {
+        return streamLocalChatCompletion({ ...options, enableThinking: true }, callbacks)
       }
       recordStream(0, message)
       callbacks.onError(message)
@@ -518,6 +565,8 @@ export const streamLocalChatCompletion = async (
     const thinkFilter = createThinkStreamFilter()
     let buffer = ''
     let finished = false
+    let reasoningChars = 0
+    let finishReason = ''
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
@@ -541,10 +590,26 @@ export const streamLocalChatCompletion = async (
             callbacks.onError(message)
             return
           }
-          const delta = chunk?.choices?.[0]?.delta?.content
+          const choice = chunk?.choices?.[0]
+          const reasoning = choice?.delta?.reasoning_content
+          if (typeof reasoning === 'string') reasoningChars += reasoning.length
+          if (
+            options.maxReasoningChars
+            && reasoningChars >= options.maxReasoningChars
+            && !collected.trim()
+          ) {
+            const message = '模型思考超出正文预算，已切换备用正文模型'
+            await reader.cancel().catch(() => undefined)
+            recordStream(0, message)
+            callbacks.onError(message)
+            return
+          }
+          if (choice?.finish_reason) finishReason = String(choice.finish_reason)
+          const delta = choice?.delta?.content
           if (typeof delta === 'string' && delta) {
             const visible = thinkFilter.push(delta)
             if (visible) {
+              if (reasoningTimer) window.clearTimeout(reasoningTimer)
               collected += visible
               callbacks.onDelta(visible)
             }
@@ -560,11 +625,26 @@ export const streamLocalChatCompletion = async (
       collected += tail
       callbacks.onDelta(tail)
     }
+    // Qwen 等思考模型会把隐式推理放在 reasoning_content，最后才开始吐 content。
+    // 输出上限若先被思考耗尽，HTTP/SSE 仍是“正常结束”，过去会被误记成成功空正文，
+    // 守护器只能整章重来并再次耗尽。把它提升为可识别错误，交给正文层就地增额重试。
+    if (!collected.trim() && reasoningChars > 0) {
+      const message = finishReason === 'length'
+        ? '模型思考耗尽输出上限，尚未返回正文'
+        : '模型只返回了思考过程，尚未返回正文'
+      recordStream(0, message)
+      callbacks.onError(message)
+      return
+    }
     recordStream(1)
     callbacks.onDone()
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
-      if (timedOut) {
+      if (reasoningBudgetExceeded) {
+        const message = '模型思考超出正文预算，已切换备用正文模型'
+        recordStream(0, message)
+        callbacks.onError(message)
+      } else if (timedOut) {
         recordStream(0, 'AI 响应超时')
         callbacks.onError('AI 响应超时，请重试')
       } else {
@@ -578,6 +658,7 @@ export const streamLocalChatCompletion = async (
     recordStream(0, message)
     callbacks.onError(message)
   } finally {
+    if (reasoningTimer) window.clearTimeout(reasoningTimer)
     clearIdle()
     if (options.signal) options.signal.removeEventListener('abort', onCallerAbort)
   }
@@ -588,9 +669,15 @@ export const streamLocalChatCompletion = async (
 // （闸三 AI 评审、施工单自动修复）
 // ---------------------------------------------------------------------------
 
-/** 上游抖动值得重试的判据：非流式与流式共用同一份 */
+/**
+ * 上游抖动值得重试的判据：非流式与流式共用同一份。
+ *
+ * 少数反向代理会在连接切换时收到一次截断的 POST，于是返回 400 并明确说明
+ * “Body is not valid JSON”。请求体本身由 JSON.stringify 构造，重新建立连接即可；
+ * 不能把这种瞬时传输故障当成正文或提示词错误而永久停书。
+ */
 const RETRIABLE_UPSTREAM =
-  /end of JSON input|empty|unexpected|\b(502|503|504)\b|gateway|timed? ?out|network|load failed|ECONNRESET|ETIMEDOUT|ERR_NETWORK/i
+  /body is not valid json|content-type is set to ['"]application\/json|end of JSON input|empty|unexpected|\b(502|503|504)\b|gateway|timed? ?out|network|load failed|ECONNRESET|ETIMEDOUT|ERR_NETWORK/i
 
 /**
  * 流式补全的「一次性收全」封装。
@@ -607,6 +694,7 @@ export const requestLocalChatCompletionStreaming = async (options: {
   messages: LocalChatMessageInput[]
   maxTokens?: number
   temperature?: number
+  enableThinking?: boolean
   signal?: AbortSignal
 } & LocalAiSceneTag): Promise<string> => {
   const MAX_ATTEMPTS = 3

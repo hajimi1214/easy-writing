@@ -157,6 +157,31 @@
           <p class="rail-self-check-hint">{{ selfCheckHint }}</p>
           <p v-if="manualRuleHint" class="rail-self-check-hint">{{ manualRuleHint }}</p>
         </section>
+
+        <section class="rail-form-section">
+          <div class="rail-form-section-title">
+            <strong>写完整卷之后</strong>
+            <span>写书器一次任务只写一卷，卷写完默认收工，下一卷要再点一次继续写。</span>
+          </div>
+
+          <el-form label-position="left" label-width="68px" class="rail-form-grid rail-form-inline">
+            <el-form-item label="卷间接力">
+              <el-select
+                v-model="draft.volumeRelay"
+                class="ink-select"
+                popper-class="ink-select-popper"
+                placeholder="选择卷间接力方式"
+                fit-input-width
+                :disabled="formDisabled"
+              >
+                <el-option label="停下等我点继续" value="停下等我点继续" />
+                <el-option label="自动接着写下一卷" value="自动接着写下一卷" />
+              </el-select>
+            </el-form-item>
+          </el-form>
+
+          <p class="rail-self-check-hint">{{ volumeRelayHint }}</p>
+        </section>
       </template>
     </div>
 
@@ -207,6 +232,7 @@ interface RulesDraft extends Record<string, string> {
   narrativeStyle: string
   storyPerspective: string
   selfCheckMode: string
+  volumeRelay: string
 }
 
 const props = withDefaults(defineProps<{
@@ -237,6 +263,7 @@ const buildDraft = (run: WorkflowRun | null): RulesDraft => {
       narrativeStyle: '',
       storyPerspective: '',
       selfCheckMode: resolveGateThirdMode(null),
+      volumeRelay: '停下等我点继续',
     }
   }
   return {
@@ -246,6 +273,7 @@ const buildDraft = (run: WorkflowRun | null): RulesDraft => {
     storyPerspective: reader.readConfigText('storyPerspective'),
     // 走与引擎同一份判定函数：旧数据只有 criticEnabled / autoFix 也能显示出真实档位
     selfCheckMode: resolveGateThirdMode(reader.rawConfig),
+    volumeRelay: reader.readConfigText('volumeRelay', '停下等我点继续') || '停下等我点继续',
   }
 }
 
@@ -292,6 +320,17 @@ const manualRuleHint = computed(() => {
   return `闸一已内置《流白》AI 味手册：硬禁词 ${words} 个、硬禁模板句 ${sentences} 条。生成前注入约束，生成后逐条核对，命中按 P1 列出并给出手册的替换改法。`
 })
 
+/**
+ * 卷间接力的代价必须讲清楚：开了就是无人值守地连续烧调用，
+ * 作者得知道「继续写下一卷」和「自动写下去」是两件事。
+ */
+const volumeRelayHint = computed(() => {
+  if (/自动|接着|下一卷|连写/i.test(draft.volumeRelay) && !/停下|等我|不自动/i.test(draft.volumeRelay)) {
+    return '一卷写完不收工，直接规划下一卷章纲接着写。会连续调用模型，跑之前先确认额度与你想写到第几卷。'
+  }
+  return '一卷写完就收工（平台原本的行为）。想继续下一卷，在工作流里再点一次继续写即可。'
+})
+
 const applyChanges = () => {
   if (!props.run || props.saving || !changedCount.value) return
   const next: RulesDraft = {
@@ -301,6 +340,7 @@ const applyChanges = () => {
     storyPerspective: draft.storyPerspective.trim(),
     // 过一遍判定函数：脏值不会写进配置
     selfCheckMode: resolveGateThirdMode({ selfCheckMode: draft.selfCheckMode }),
+    volumeRelay: draft.volumeRelay.trim() || '停下等我点继续',
   }
   // 补丁语义：只提交真实变化字段，避免覆盖其他面板的待生效配置
   const config = buildPatch(next) as Partial<WorkflowRuntimeSettings>

@@ -87,6 +87,9 @@ const writeValue = async (key: string, value: unknown) => {
 
 export const readLocalWorkflowRun = (id: number | string) => readValue<LocalWorkflowRun>(runKey(id))
 
+/** 原样读取任务，不做“孤儿修复”；供生成器写入时检查终态，避免旧断点倒灌。 */
+export const readLocalWorkflowTask = (id: number | string) => readValue<WorkflowTask>(taskKey(id))
+
 export const writeLocalWorkflowRun = (run: LocalWorkflowRun) => writeValue(runKey(run.id), run)
 
 export const listLocalWorkflowRuns = async (): Promise<LocalWorkflowRun[]> => {
@@ -196,6 +199,18 @@ export const writeLocalWorkflowTask = async (task: WorkflowStepTask | WorkflowTa
   await writeValue(taskKey(task.id), task)
 }
 
+const isCrossTabBookWriterLive = async (runId: number) => {
+  if (typeof navigator === 'undefined' || !navigator.locks) return false
+  try {
+    const run = await readLocalWorkflowRun(runId)
+    const lockIdentity = run?.bookId ? `book:${String(run.bookId)}` : `run:${Number(runId)}`
+    const snapshot = await navigator.locks.query()
+    return (snapshot.held || []).some(lock => lock.name === `easy-writing:book-writer:${lockIdentity}`)
+  } catch {
+    return false
+  }
+}
+
 /**
  * 读任务并做孤儿修复：任务停在 queued/running 但引擎里没有对应的活循环，
  * 说明上次应用中途关闭——如实翻成 interrupted（有断点则可继续生成）。
@@ -205,6 +220,7 @@ export const readRepairedLocalTask = async (taskId: number): Promise<WorkflowTas
   if (!task) return null
   const status = String(task.status || '')
   if (!['queued', 'running'].includes(status) || isLiveLocalTask(taskId)) return task
+  if (await isCrossTabBookWriterLive(Number(task.runId))) return task
   const repaired: WorkflowTask = {
     ...task,
     status: 'interrupted',

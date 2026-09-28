@@ -75,7 +75,10 @@ export const buildChapterContentMessages = (params: {
   return [
     {
       role: 'system',
-      content: renderPromptText('workflow-writer', 'contentSystem', { 目标字数: params.targetWords }),
+      content: renderPromptText('workflow-writer', 'contentSystem', {
+        目标字数: params.targetWords,
+        字数上限: params.targetWords + 500,
+      }),
     },
     {
       role: 'user',

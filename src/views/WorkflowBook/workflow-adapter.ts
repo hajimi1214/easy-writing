@@ -40,6 +40,7 @@ const defaultBaseConfig: WorkflowBaseConfig = {
   protagonist: '成长型主角',
   storyPerspective: '第三人称',
   audience: '男频',
+  volumeRelay: '停下等我点继续',
   sellingPoint: '',
   // 空值 = 跟随 AI 偏好（各环节按对应场景的偏好模型执行），也是新建草稿的默认；
   // 不自动补具体模型，避免以 explicit 层静默压过用户的功能级模型偏好
@@ -124,6 +125,7 @@ export const WORKFLOW_CREATION_DEFAULT_KEYS = [
   'protagonist',
   'storyPerspective',
   'audience',
+  'volumeRelay',
 ] as const
 
 export type WorkflowCreationDefaultKey =
@@ -871,6 +873,27 @@ const normalizeCharacters = (value: unknown): WorkflowSettingCharacter[] => {
   return normalizeCharacterRows(rows)
 }
 
+/**
+ * 揭晓闸门字段透传。只回填「真正设了闸门」的条目：缺省与 0 都视为始终可见
+ * （见 setting-reveal.ts 的 REVEAL_ALWAYS），不往载荷里塞噪声。
+ *
+ * 归一化丢掉这两个字段的后果很实在：`buildWorkflowSavePayload` 是拿归一化后的
+ * draft.settingResult 去 clone 出 workflowSettingUi 的，而生成正文时读的正是
+ * workflowSettingUi —— 丢一次，闸门就永久失效，后卷角色会从第 1 章起整张卡进提示词。
+ */
+const revealGateFields = (item: JsonRecord | null | undefined) => {
+  const chapter = Number(item?.revealAtChapter)
+  return Number.isFinite(chapter) && chapter > 0 ? { revealAtChapter: Math.round(chapter) } : {}
+}
+
+const characterRevealFields = (item: JsonRecord | null | undefined) => {
+  const fields: Record<string, unknown> = { ...revealGateFields(item) }
+  const brief = asText(item?.briefBackground)
+  // 安全简介是「只喂这一句」的开关，空串会被 setting-reveal 当成没写，故非空才带
+  if (brief) fields.briefBackground = brief
+  return fields
+}
+
 const normalizeCharacterRows = (rows: JsonRecord[]): WorkflowSettingCharacter[] => (
   rows.map((item, index) => ({
     id: asText(item?.id) || `char-${index + 1}`,
@@ -881,6 +904,7 @@ const normalizeCharacterRows = (rows: JsonRecord[]): WorkflowSettingCharacter[] 
     keywords: asText(item?.keywords) || [item?.personality, item?.ability].map(text => asText(text)).filter(Boolean).join('；'),
     motivation: asText(item?.motivation) || asText(item?.goal) || asText(item?.growthArc),
     badge: asText(item?.badge),
+    ...characterRevealFields(item),
   })).filter(item => item.name)
 )
 
@@ -901,6 +925,7 @@ const normalizeStorylines = (value: unknown): WorkflowSettingStoryline[] => {
     title: asText(item?.title) || `阶段${index + 1}`,
     desc: asText(item?.desc) || asText(item?.summary),
     keyEvent: asText(item?.keyEvent) || asTextArray(item?.chapters).join('、'),
+    ...revealGateFields(item),
   }))
 }
 

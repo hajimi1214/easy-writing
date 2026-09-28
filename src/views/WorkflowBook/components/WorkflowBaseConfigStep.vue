@@ -108,7 +108,7 @@ const emit = defineEmits<{
   (event: 'back-direction'): void
 }>()
 
-type WritingSelectFieldKey = 'targetWords' | 'chapterTargetWords' | 'protagonist' | 'storyPerspective'
+type WritingSelectFieldKey = 'targetWords' | 'chapterTargetWords' | 'protagonist' | 'storyPerspective' | 'volumeRelay'
 
 const aiModelStore = useAiModelStore()
 const baseConfig = computed(() => props.draft.baseConfig)
