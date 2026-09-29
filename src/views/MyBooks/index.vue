@@ -457,9 +457,18 @@ onMounted(() => {
   void runContentCorrections()
     .then((report) => {
       if (report.skipped || !report.chapters) return
+      // 部分条目没生效时必须说出来：只报成功会让作者以为全改完了，
+      // 而完成标志只在 problems 为空时才置，未生效的条目其实下次进入还会再试。
+      if (report.problems.length) {
+        ElMessage.warning(
+          `存量修正有 ${report.problems.length} 条未生效（下次进入会重试）：${report.problems[0]}`,
+        )
+        console.warn('[存量修正] 未生效条目：', report.problems)
+      }
       ElMessage.success(
         `已修正存量内容：${report.chapters} 章 / ${report.applied} 处` +
-          (report.artifacts ? `（另剥离工程残留 ${report.artifacts} 处）` : ''),
+          (report.artifacts ? `（另剥离工程残留 ${report.artifacts} 处）` : '') +
+          (report.dupLines ? `（相邻重复 ${report.dupLines} 处）` : ''),
       )
     })
     .catch((error) => console.error('[存量修正] 执行失败：', error))
