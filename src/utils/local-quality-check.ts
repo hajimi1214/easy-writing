@@ -25,7 +25,8 @@ import { countWords } from '@/utils/word-count'
 
 // 用户要求的是“目标字数”硬门槛：少 1 字也不能进入下一章；上限固定放宽 500 字，
 // 既允许章间有自然轻重，也不允许模型把下一章剧情一起写进来。
-const WORD_HIGH_ALLOWANCE = 500
+// 导出验收（local-library-utils）也用它——上限口径必须单一真源，否则平台判过关、导出判不过。
+export const WORD_HIGH_ALLOWANCE = 500
 const REPEAT_MIN_PARAGRAPH_CHARS = 16
 const QUOTE_MAX = 3
 const QUOTE_SLICE = 60

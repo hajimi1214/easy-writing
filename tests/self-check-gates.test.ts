@@ -467,6 +467,27 @@ describe('闸三 · AI 评审结果解析', () => {
       textContent: `乙${'甲'.repeat(3000)}\n第3章 转\n${'丙'.repeat(3000)}`,
     }
     expect(() => assertLocalTxtExportReady([mergedChapter])).toThrow(/正文内含另一处章标题/)
+
+    // 存量章的超长上限同样按比例（3000×1.4＝4200）。
+    // 第27章 3644 字只超目标 4%，不能误拦——否则整本第一卷卡在一章上导不出去。
+    const legacySlightlyLong = {
+      ...makeChapter(5, 5, '承', '', { workflowPlanIndex: 5 }),
+      textContent: '甲'.repeat(3644),
+    }
+    expect(() => assertLocalTxtExportReady([legacySlightlyLong])).not.toThrow()
+
+    const legacyTooLong = {
+      ...makeChapter(6, 6, '承', '', { workflowPlanIndex: 6 }),
+      textContent: '甲'.repeat(4201),
+    }
+    expect(() => assertLocalTxtExportReady([legacyTooLong])).toThrow(/超过 4200 字/)
+
+    // 写书器盖过逐章目标的章不放宽：仍按自己的目标 +500 卡
+    const stampedTooLong = {
+      ...makeChapter(7, 7, '承', '', { workflowPlanIndex: 7, workflowTargetWords: 3000 }),
+      textContent: '甲'.repeat(3501),
+    }
+    expect(() => assertLocalTxtExportReady([stampedTooLong])).toThrow(/超过 3500 字/)
   })
 
   it('动态统计人物机械段首，跨章超限时作为P1阻断并精准给出段号', () => {

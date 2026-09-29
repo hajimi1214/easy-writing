@@ -10,6 +10,7 @@ import type {
   LocalVolume,
 } from './local-library-types'
 import { countWords } from '@/utils/word-count'
+import { WORD_HIGH_ALLOWANCE } from '@/utils/local-quality-check'
 import { sanitizeChapterText } from '@/utils/chapter-sanitize'
 
 export const LOCAL_USER_ID = 'guest'
@@ -321,11 +322,19 @@ const exportChapterPrefixPattern = /^第([零一二三四五六七八九十百�
 const LEGACY_EXPORT_TARGET_WORDS = 3000
 /**
  * 存量章的字数下限比例。
- * 存量章是按旧规则（目标 3000、下限 85%）写出来的，字数普遍落在 2870–2998。
+ * 存量章是按旧规则（目标 3000）写出来的，不会正好落在 3000。
  * 若一律按「必须满 3000」卡，这些正常章会被整本拦下——作者反而什么都导不出来。
  * 取 90%：真正写残的短章（1293 字那种）照样拦得住，只差几十字的正常章不再误伤。
  */
 const LEGACY_WORD_FLOOR_RATIO = 0.9
+/**
+ * 存量章的字数上限比例。
+ * 取值与规则包 02-pacing.json 的 noticeAboveRatio 一致（1.4）——过了这条线才值得看一眼。
+ * 上限**不能**套用写书器新章的「目标 +500」：那是给可控的新章用的，存量章本来就不按目标写。
+ * 例：第27章 3644 字只超目标 4%，按 +500（3500）卡会把它误拦，整本第一卷都导不出去。
+ * 真正要拦的是「多章被合并」，已由下面的「2 倍或 8000 字」与「正文内含另一处章标题」兜住。
+ */
+const LEGACY_WORD_CEILING_RATIO = 1.4
 
 /**
  * 导出时永远以目录 sortNo 重建章号。
@@ -381,14 +390,16 @@ export const assertLocalTxtExportReady = (
     const body = sanitizeChapterText(chapter.textContent || '')
     const words = countWords(body)
     const managed = Boolean(options.workflowBook || isWorkflowChapter(chapter))
-    // 逐章目标只有写书器写过的章才有；存量章一律按兜底目标 + 90% 下限判定，
-    // 新写的章仍严格按自己的目标卡，两边口径不同是有意为之。
+    // 逐章目标只有写书器写过的章才有；存量章两侧都按比例卡，新写的章仍严格按自己的
+    // 目标 +500 卡。两边口径不同是有意为之：新章的目标是写书器可控的，存量章不是。
     const stampedTarget = Number(chapter.planMeta?.workflowTargetWords || 0)
     const targetWords = stampedTarget > 0 ? stampedTarget : LEGACY_EXPORT_TARGET_WORDS
     const minimumWords = stampedTarget > 0
       ? stampedTarget
       : Math.round(LEGACY_EXPORT_TARGET_WORDS * LEGACY_WORD_FLOOR_RATIO)
-    const maximumWords = targetWords + 500
+    const maximumWords = stampedTarget > 0
+      ? stampedTarget + WORD_HIGH_ALLOWANCE
+      : Math.round(LEGACY_EXPORT_TARGET_WORDS * LEGACY_WORD_CEILING_RATIO)
 
     if (chapter.workflowStatus === 'incomplete' || chapter.workflowStatus === 'review_required') {
       failures.push(`第${chapterNo}章仍是${chapter.workflowStatus === 'incomplete' ? '断点章' : '待修复章'}`)
