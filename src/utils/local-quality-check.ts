@@ -23,14 +23,9 @@ import { countWords } from '@/utils/word-count'
  * 共用同一份，保证「写之前告诉模型什么不能写」和「写完之后检查有没有违规」口径一致。
  */
 
-// 用户要求的是“目标字数”硬门槛：少 1 字也不能进入下一章。
-// 章节字数按「区间」判定，不再是硬门槛。
-// 为什么改：硬门槛（少 1 字也阻断）会把每一章都精确钉在同一个字数上。
-// 审读《墨痕长生》第一卷实测：剔除离群章后 32 章的标准差只有 88 字、极差 469 字，
-// 通读时「每章一样重」，节奏是一条平线。放宽为 0.85–1.15 之后，
-// 1320 字那种真短章照样拦得住（远低于下限），但剧情需要长一点/短一点时不再被卡死。
-const WORD_LOW_BLOCK_RATIO = 0.85
-const WORD_HIGH_BLOCK_RATIO = 1.15
+// 用户要求的是“目标字数”硬门槛：少 1 字也不能进入下一章；上限固定放宽 500 字，
+// 既允许章间有自然轻重，也不允许模型把下一章剧情一起写进来。
+const WORD_HIGH_ALLOWANCE = 500
 const REPEAT_MIN_PARAGRAPH_CHARS = 16
 const QUOTE_MAX = 3
 const QUOTE_SLICE = 60
@@ -42,13 +37,13 @@ const clipQuote = (value: string) => {
 
 const checkWordCount = (words: number, targetWords: number): WorkflowQualityIssue[] => {
   if (!targetWords) return []
-  const minimumWords = Math.round(targetWords * WORD_LOW_BLOCK_RATIO)
+  const minimumWords = targetWords
   if (words < minimumWords) {
     return [{
       source: 'rule',
       code: 'word_count_low',
       dimension: '篇幅',
-      message: `本章只有 ${words} 字，低于允许下限 ${minimumWords} 字（目标 ${targetWords} 字的 ${Math.round(WORD_LOW_BLOCK_RATIO * 100)}%），不能进入下一章`,
+      message: `本章只有 ${words} 字，未达到目标 ${minimumWords} 字，不能进入下一章`,
       severity: 'high',
       grade: 'P0',
       blocking: true,
@@ -56,7 +51,7 @@ const checkWordCount = (words: number, targetWords: number): WorkflowQualityIssu
       metrics: { wordCount: words, targetWords, minimumWords },
     }]
   }
-  const maximumWords = Math.round(targetWords * WORD_HIGH_BLOCK_RATIO)
+  const maximumWords = targetWords + WORD_HIGH_ALLOWANCE
   if (words > maximumWords) {
     return [{
       source: 'rule',
@@ -323,9 +318,13 @@ const checkBookwideNarrativeTics = (
       0,
     )
     const total = previousCount + currentCount
-    const limit = limits[label] || 12
+    const dynamicOpening = label.startsWith('段首:')
+    const limit = dynamicOpening ? 10 : (limits[label] || 12)
     if (total <= limit) continue
-    const literal = label === '没动/没有动'
+    const dynamicLiteral = label.slice('段首:'.length).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const literal = dynamicOpening
+      ? new RegExp(`^${dynamicLiteral}`)
+      : label === '没动/没有动'
       ? /没动|没有动/
       : label === '流白点头'
         ? /流白点头|流白点了点头/
@@ -335,15 +334,15 @@ const checkBookwideNarrativeTics = (
     const hits = locateParagraphHits(text, literal, 8)
     issues.push({
       source: 'rule',
-      code: `bookwide_narrative_tic_${label}`,
+      code: `bookwide_narrative_tic_${label.replace(/[^\w\u4e00-\u9fff]+/g, '_')}`,
       dimension: '全书文风',
-      grade: 'P2',
-      severity: 'low',
-      blocking: false,
-      message: `最近12章“${label}”累计 ${total} 次（本章 ${currentCount} 次），已形成跨章机械节拍`,
+      grade: dynamicOpening ? 'P1' : 'P2',
+      severity: dynamicOpening ? 'high' : 'low',
+      blocking: dynamicOpening,
+      message: `最近12章“${dynamicOpening ? label.slice('段首:'.length) : label}”累计 ${total} 次（本章 ${currentCount} 次），已形成跨章机械节拍`,
       paragraphs: hits.map(item => item.paragraphNo),
       quotes: hits.slice(0, QUOTE_MAX).map(item => item.quote),
-      fix: `改写本章第 ${hits.map(item => item.paragraphNo).join('、') || '命中'} 段的“${label}”，换成能推进信息、关系或动作结果的具体表现`,
+      fix: `仅改写本章第 ${hits.map(item => item.paragraphNo).join('、') || '命中'} 段的段首句式，保留事实和剧情结果，换成环境反应、物件变化、对方动作或直接信息推进；不得整章重写`,
       metrics: { total, currentCount, limit },
     })
   }

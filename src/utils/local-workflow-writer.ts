@@ -1406,6 +1406,13 @@ const runWriterLoop = async (initial: WorkflowTask, flags: WriterFlags) => {
       flags.abort = new AbortController()
       emit('stage', { message: `正在准备第${chapter.sortNo}章《${chapter.title}》` })
       chapter = await ensureChapterBeats(run, work.volume, chapter, modelCode, flags.abort.signal)
+      // 导出验收必须知道本章实际字数目标；把逐章目标随章保存，避免区间配置的章节
+      // 被导出器误按默认 3000 字判断。planMeta 整体替换，因此必须保留细纲与事实账本。
+      const targetTagged = await getLocalLibraryStorage().updateLocalChapter({
+        id: chapter.id,
+        planMeta: { ...(chapter.planMeta || {}), workflowTargetWords: targetWords },
+      })
+      if (targetTagged) chapter = targetTagged
     } catch (error) {
       flags.abort = null
       if (await consumeChapterRestart()) continue

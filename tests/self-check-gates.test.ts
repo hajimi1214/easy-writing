@@ -14,7 +14,7 @@ import {
   resolveVolumeOfChapter,
   summarizeGrades,
 } from '@/utils/quality-rules'
-import { buildLedgerMaterials, scanChapterLedger } from '@/utils/fact-ledger'
+import { buildLedgerMaterials, scanChapterLedger, scanStyleTics } from '@/utils/fact-ledger'
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
@@ -64,7 +64,7 @@ import {
   createInitialWorkflowDraft,
   normalizeSettingResult,
 } from '@/views/WorkflowBook/workflow-adapter'
-import { formatExportChapterTitle } from '@/storage/local-library-utils'
+import { assertLocalTxtExportReady, formatExportChapterTitle } from '@/storage/local-library-utils'
 
 const filler = '他走进院子，脚步很轻。'.repeat(180)
 const makeChapter = (
@@ -437,6 +437,46 @@ describe('闸三 · AI 评审结果解析', () => {
   it('合并导出永远带稳定第N章编号，裸章名不会再破坏章节解析', () => {
     expect(formatExportChapterTitle(makeChapter(1, 33, '埋我者，亦埋你', ''))).toBe('第33章 埋我者，亦埋你')
     expect(formatExportChapterTitle(makeChapter(2, 34, '第34章 邢三更的结局', ''))).toBe('第34章 邢三更的结局')
+    expect(formatExportChapterTitle(makeChapter(3, 35, '第34章 往北', ''))).toBe('第35章 往北')
+  })
+
+  it('工作流导出会拦住缺字章与被合并的多章正文', () => {
+    const workflowChapter = {
+      ...makeChapter(1, 1, '起', '', { workflowPlanIndex: 1 }),
+      textContent: '甲'.repeat(2999),
+    }
+    expect(() => assertLocalTxtExportReady([workflowChapter])).toThrow(/未达到 3000 字/)
+
+    const mergedChapter = {
+      ...makeChapter(2, 2, '承', ''),
+      textContent: `乙${'甲'.repeat(3000)}\n第3章 转\n${'丙'.repeat(3000)}`,
+    }
+    expect(() => assertLocalTxtExportReady([mergedChapter])).toThrow(/正文内含另一处章标题/)
+  })
+
+  it('动态统计人物机械段首，跨章超限时作为P1阻断并精准给出段号', () => {
+    const tics = scanStyleTics('流白没说话。\n沈照月把纸折起。\n流白没有回头。')
+    expect(tics['段首:流白没']).toBe(2)
+    expect(tics['段首:沈照月把']).toBe(1)
+
+    const previous = Array.from({ length: 5 }, (_, index) => makeChapter(index + 1, index + 1, `章${index + 1}`, '', {
+      workflowLedger: {
+        chapterNo: index + 1, title: `章${index + 1}`, wordCount: 3000,
+        characters: ['流白'], tail: '…', styleTics: { '段首:流白没': 2 }, updatedAt: '',
+      },
+    }))
+    const check = runLocalChapterQualityCheck({
+      chapterId: 6,
+      chapterNo: 6,
+      chapterTitle: '新章',
+      text: `流白没接话。\n${'甲'.repeat(3000)}。`,
+      targetWords: 3000,
+      contentVersion: 1,
+      orderedChapters: [...previous, makeChapter(6, 6, '新章', '')],
+    })
+    expect(check.issues.find(issue => issue.code.includes('段首_流白没'))).toMatchObject({
+      grade: 'P1', blocking: true, paragraphs: [1],
+    })
   })
 
   it('合并进质检通知后按 P0→P2 排序并刷新阻断标记', () => {

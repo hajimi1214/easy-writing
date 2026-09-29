@@ -16,6 +16,9 @@ export const LEGACY_PROMPT_TEXT_HASHES = new Set<string>([
   '1r65x1m', 'gshmal', 'nr3rrn', 'suozbs', '1kvwkm8', 'ay7gqz', '1srhwf5', '1k0xfvp',
   'gkh7sk', '1qt8vhm', 'imkojo', 'x6cmu', 'l3xzwn', 'la8mm8', '89yr15', 'smei4p',
   '1fhl6ke', 'shvxnw', 'ro0ib2',
+  // 2026-09-29：正文与审查默认提示词加入跨章结构/人物段首去重。
+  // 只迁移完全等于上一版默认值的槽位，用户自己改过的提示词继续保留。
+  '1g0smdn', 'b9ghkz',
 ])
 
 /** djb2 字符串哈希（与指纹生成脚本一致） */

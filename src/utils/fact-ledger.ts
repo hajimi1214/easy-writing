@@ -81,11 +81,35 @@ const STYLE_TIC_PATTERNS: Record<string, RegExp> = {
   '沉默回应': /没再说|没再问|没说话|没接话/g,
 }
 
-export const scanStyleTics = (text: string): Record<string, number> =>
-  Object.fromEntries(Object.entries(STYLE_TIC_PATTERNS).map(([label, regex]) => {
+const PARAGRAPH_OPENING_MARKERS = ['没有', '接过', '转身', '点头', '没', '把', '说', '问', '看', '走', '站']
+
+/**
+ * 固定词表抓不到“流白没…… / 沈照月把……”这种随人物变化的模板段首。
+ * 按名册动态扫描，每段只记第一个人物+动作骨架；标签进入章节账本后即可跨章累计。
+ */
+const scanCharacterParagraphOpenings = (text: string) => {
+  const counts: Record<string, number> = {}
+  const names = [...new Set(rosterNames)].sort((left, right) => right.length - left.length)
+  for (const paragraph of String(text || '').split(/\r?\n/).map(item => item.trim()).filter(Boolean)) {
+    const name = names.find(candidate => paragraph.startsWith(candidate))
+    if (!name) continue
+    const rest = paragraph.slice(name.length)
+    const marker = PARAGRAPH_OPENING_MARKERS.find(candidate => rest.startsWith(candidate))
+    if (!marker) continue
+    const normalizedMarker = marker === '没有' ? '没' : marker
+    const label = `段首:${name}${normalizedMarker}`
+    counts[label] = (counts[label] || 0) + 1
+  }
+  return counts
+}
+
+export const scanStyleTics = (text: string): Record<string, number> => {
+  const fixed = Object.fromEntries(Object.entries(STYLE_TIC_PATTERNS).map(([label, regex]) => {
     regex.lastIndex = 0
     return [label, (String(text || '').match(regex) || []).length]
   }))
+  return { ...fixed, ...scanCharacterParagraphOpenings(text) }
+}
 
 export type CharacterState = 'dead' | 'alive' | 'injured' | 'missing'
 

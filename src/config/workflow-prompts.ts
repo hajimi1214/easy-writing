@@ -15,6 +15,11 @@ const materialBlock = (materials: Record<string, string>) =>
     .map(([key, value]) => `【${key}】\n${String(value).trim()}`)
     .join('\n\n')
 
+// 平台级硬护栏不放在可编辑提示词槽位里：旧项目即使缓存了上一版默认提示词，
+// 也会立刻得到结构去重约束；用户自定义提示词仍可保留，但不能关闭交付底线。
+const CONTENT_STRUCTURE_GUARD = '【平台结构去重】对照近期章纲，不得连续复用“发现物证—检查痕迹—问答确认—转往新地点”或其他同构事件链；若章纲必须调查，必须改变取证方式、阻力或结算结果，并结算一条旧信息。避免连续用“人物名＋没／把／说／问／看／走／站”作为段首。'
+const CRITIC_STRUCTURE_GUARD = '【平台结构验收】与近期章纲比较：连续三章以上复用同构调查链判 P1；人物名后紧跟“没／把／说／问／看／走／站”等动作骨架形成跨章机械段首也判 P1。施工单必须给本章命中段号并做最小替换，不得整章泛化润色。'
+
 const jsonSystem = (shape: string, extra = '') =>
   renderPromptText('workflow-writer', 'jsonSystem', { JSON形状: shape, 补充要求: extra })
 
@@ -75,10 +80,13 @@ export const buildChapterContentMessages = (params: {
   return [
     {
       role: 'system',
-      content: renderPromptText('workflow-writer', 'contentSystem', {
-        目标字数: params.targetWords,
-        字数上限: params.targetWords + 500,
-      }),
+      content: [
+        renderPromptText('workflow-writer', 'contentSystem', {
+          目标字数: params.targetWords,
+          字数上限: params.targetWords + 500,
+        }),
+        CONTENT_STRUCTURE_GUARD,
+      ].join('\n\n'),
     },
     {
       role: 'user',
@@ -145,6 +153,7 @@ export const buildChapterCriticMessages = (params: {
     role: 'system',
     content: [
       promptText('workflow-writer', 'criticSystem'),
+      CRITIC_STRUCTURE_GUARD,
       renderPromptText('workflow-writer', 'jsonSystem', {
         JSON形状: promptText('workflow-writer', 'criticShape'),
         补充要求: 'scores 与 issues 两个字段都必须给出；本章确实没问题时 issues 返回空数组。',

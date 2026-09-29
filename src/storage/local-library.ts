@@ -6,6 +6,7 @@ import type {
   LocalExportPayload,
   LocalImportPreview,
   LocalImportResult,
+  LocalLibraryVolume,
   LocalLibraryStorage,
   LocalParsedBook,
 } from './local-library-types'
@@ -13,6 +14,7 @@ import {
   buildLocalExportPayload,
   buildLocalTxtExport,
   formatExportChapterTitle,
+  assertLocalTxtExportReady,
   createLocalImportPreview,
   isLocalEntityId,
   LOCAL_USER_ID,
@@ -326,26 +328,41 @@ export const exportLocalChaptersTxt = async (
   if (!book) throw new Error('本地作品不存在')
   const tree = await library.getLocalBookTree(book.id)
   const wanted = new Set(chapterIds.map(Number))
-  const lines: string[] = []
+  const selected: Array<LocalLibraryVolume['children'][number] & { textContent: string }> = []
+  const selectedByVolume = new Map<number, typeof selected>()
   let picked = 0
   for (const volume of tree) {
     const chapters = volume.children.filter(chapter => wanted.has(Number(chapter.id)))
     if (!chapters.length) continue
-    lines.push(volume.title, '')
+    const resolved: typeof selected = []
     for (const chapter of chapters) {
       const draft = await writingStorage.getChapterByIdentity(LOCAL_USER_ID, book.id, chapter.id)
-      // 章节合并导出同样要过净化：这条路径以前直接吐 textContent，
-      // 于是 [P88]、「您的打分：83/100」这类平台痕迹原样进了 txt。
-      lines.push(
-        formatExportChapterTitle(chapter),
-        '',
-        sanitizeChapterText(draft?.textContent || ''),
-        '',
-      )
+      const item = { ...chapter, textContent: sanitizeChapterText(draft?.textContent || '') }
+      selected.push(item)
+      resolved.push(item)
       picked += 1
     }
+    selectedByVolume.set(Number(volume.id), resolved)
   }
   if (!picked) throw new Error('所选章节不存在')
+  assertLocalTxtExportReady(selected, {
+    workflowBook: Boolean(
+      (book.globalInstruction
+        && typeof book.globalInstruction === 'object'
+        && Number((book.globalInstruction as Record<string, unknown>).workflowRunId || 0) > 0)
+      || /workflowRunId/.test(String(book.globalInstruction || ''))
+    ),
+  })
+  const lines: string[] = []
+  for (const volume of tree) {
+    const chapters = selectedByVolume.get(Number(volume.id)) || []
+    if (!chapters.length) continue
+    lines.push(volume.title, '')
+    for (const chapter of chapters) {
+      // 章节合并导出同样先净化再验收，平台痕迹或合订章不会混进交付 TXT。
+      lines.push(formatExportChapterTitle(chapter), '', chapter.textContent, '')
+    }
+  }
   const exportDate = formatExportDate(new Date())
   const suffix = picked === 1 ? '' : '-章节合并'
   const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' })

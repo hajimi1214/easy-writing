@@ -315,14 +315,95 @@ export const createLocalImportPreview = (filename: string, payload: LocalParsedB
   }
 }
 
-/** 导出时强制补齐稳定章节编号；目录里存的是裸章名也不会再让解析器错章。 */
+const exportChapterPrefixPattern = /^第([零一二三四五六七八九十百千万两\d]+)章(?:[\s:：、.-]*)(.*)$/
+
+/**
+ * 导出时永远以目录 sortNo 重建章号。
+ *
+ * 旧实现只在标题没有章号时补号；一旦目录里的 sortNo 已经是 35、存量标题却仍写
+ * “第34章”，错误章号就会原样导出，下一次导入又会错章。这里把存量前缀剥掉后重建，
+ * 让目录顺序成为唯一真相。
+ */
 export const formatExportChapterTitle = (chapter: Pick<LocalChapter, 'title' | 'sortNo'>) => {
   const title = String(chapter.title || '').trim()
-  if (/^第[零一二三四五六七八九十百千万两\d]+章(?:\s|$)/.test(title)) return title
-  return `第${Number(chapter.sortNo || 0)}章${title ? ` ${title}` : ''}`
+  const matched = title.match(exportChapterPrefixPattern)
+  const bareTitle = String(matched?.[2] ?? title).trim()
+  const storedNo = matched ? parseTxtHeadingNo(matched[1]) : null
+  const chapterNo = Number(chapter.sortNo || 0) || storedNo || 1
+  return `第${chapterNo}章${bareTitle ? ` ${bareTitle}` : ''}`
+}
+
+type TxtExportChapter = Pick<LocalChapter, 'title' | 'sortNo' | 'workflowStatus' | 'planMeta'> & {
+  textContent?: string
+}
+
+const isWorkflowBook = (globalInstruction: unknown) => {
+  if (globalInstruction && typeof globalInstruction === 'object') {
+    return Number((globalInstruction as Record<string, unknown>).workflowRunId || 0) > 0
+  }
+  return /workflowRunId/.test(String(globalInstruction || ''))
+}
+
+const isWorkflowChapter = (chapter: TxtExportChapter) => {
+  const meta = chapter.planMeta || {}
+  return Boolean(
+    chapter.workflowStatus
+    || meta.workflowPlanIndex
+    || meta.expandedOutline
+    || meta.workflowLedger
+  )
+}
+
+const internalChapterHeadingPattern = /^\s*第[零一二三四五六七八九十百千万两\d]+章(?:[\s:：、.-]+[^。！？!?]{0,40})?\s*$/m
+
+/**
+ * TXT 是交付物，不是“把数据库里有什么就吐什么”的调试快照。
+ * 导出前统一拦住断点章、缺字章、超长合订章和正文内嵌章头；这样坏数据不会再被
+ * 包装成一本看似完整的小说。错误里直接列章号，工作流可继续让平台模型自检修复。
+ */
+export const assertLocalTxtExportReady = (
+  chapters: TxtExportChapter[],
+  options: { workflowBook?: boolean } = {},
+) => {
+  const failures: string[] = []
+  for (const chapter of chapters) {
+    const chapterNo = Number(chapter.sortNo || 0)
+    const body = sanitizeChapterText(chapter.textContent || '')
+    const words = countWords(body)
+    const managed = Boolean(options.workflowBook || isWorkflowChapter(chapter))
+    const targetWords = Math.max(1, Number(chapter.planMeta?.workflowTargetWords || 3000))
+    const maximumWords = targetWords + 500
+
+    if (chapter.workflowStatus === 'incomplete' || chapter.workflowStatus === 'review_required') {
+      failures.push(`第${chapterNo}章仍是${chapter.workflowStatus === 'incomplete' ? '断点章' : '待修复章'}`)
+      continue
+    }
+    if (managed && words < targetWords) {
+      failures.push(`第${chapterNo}章仅 ${words} 字，未达到 ${targetWords} 字`)
+      continue
+    }
+    if (managed && words > maximumWords) {
+      failures.push(`第${chapterNo}章共 ${words} 字，超过 ${maximumWords} 字`)
+      continue
+    }
+    if (words > Math.max(maximumWords * 2, 8000)) {
+      failures.push(`第${chapterNo}章异常长（${words} 字），疑似多章被合并`)
+      continue
+    }
+    if (internalChapterHeadingPattern.test(body)) {
+      failures.push(`第${chapterNo}章正文内含另一处章标题，疑似多章被合并`)
+    }
+  }
+  if (!failures.length) return
+  const preview = failures.slice(0, 8).join('；')
+  const suffix = failures.length > 8 ? `；另有 ${failures.length - 8} 章` : ''
+  throw new Error(`导出已阻止：正文未通过交付门槛。${preview}${suffix}。请先让平台自检修复后再导出。`)
 }
 
 export const buildLocalTxtExport = async (payload: LocalExportPayload) => {
+  assertLocalTxtExportReady(payload.chapters, {
+    workflowBook: isWorkflowBook(payload.book.globalInstruction),
+  })
   const lines: string[] = [
     `书名：${payload.book.title}`,
     payload.book.intro ? `简介：${payload.book.intro}` : '',
