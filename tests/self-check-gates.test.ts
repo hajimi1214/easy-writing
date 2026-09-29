@@ -441,14 +441,29 @@ describe('闸三 · AI 评审结果解析', () => {
   })
 
   it('工作流导出会拦住缺字章与被合并的多章正文', () => {
-    const workflowChapter = {
-      ...makeChapter(1, 1, '起', '', { workflowPlanIndex: 1 }),
+    // 写书器写过逐章目标的章：严格按自己的目标卡
+    const stampedChapter = {
+      ...makeChapter(1, 1, '起', '', { workflowPlanIndex: 1, workflowTargetWords: 3000 }),
       textContent: '甲'.repeat(2999),
     }
-    expect(() => assertLocalTxtExportReady([workflowChapter])).toThrow(/未达到 3000 字/)
+    expect(() => assertLocalTxtExportReady([stampedChapter])).toThrow(/未达到 3000 字/)
+
+    // 存量章（没有逐章目标）：按兜底目标 3000 的 90% 判定，
+    // 只差几十字的正常章不再被误伤——否则整本第一卷都会被拦在导出外面
+    const legacyNormal = {
+      ...makeChapter(2, 2, '承', '', { workflowPlanIndex: 2 }),
+      textContent: '甲'.repeat(2900),
+    }
+    expect(() => assertLocalTxtExportReady([legacyNormal])).not.toThrow()
+
+    const legacyShort = {
+      ...makeChapter(3, 3, '转', '', { workflowPlanIndex: 3 }),
+      textContent: '甲'.repeat(2699),
+    }
+    expect(() => assertLocalTxtExportReady([legacyShort])).toThrow(/未达到 2700 字/)
 
     const mergedChapter = {
-      ...makeChapter(2, 2, '承', ''),
+      ...makeChapter(4, 4, '合', ''),
       textContent: `乙${'甲'.repeat(3000)}\n第3章 转\n${'丙'.repeat(3000)}`,
     }
     expect(() => assertLocalTxtExportReady([mergedChapter])).toThrow(/正文内含另一处章标题/)

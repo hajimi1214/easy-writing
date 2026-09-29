@@ -317,6 +317,16 @@ export const createLocalImportPreview = (filename: string, payload: LocalParsedB
 
 const exportChapterPrefixPattern = /^第([零一二三四五六七八九十百千万两\d]+)章(?:[\s:：、.-]*)(.*)$/
 
+/** 存量章没有逐章目标时的兜底目标（与写书器默认一致） */
+const LEGACY_EXPORT_TARGET_WORDS = 3000
+/**
+ * 存量章的字数下限比例。
+ * 存量章是按旧规则（目标 3000、下限 85%）写出来的，字数普遍落在 2870–2998。
+ * 若一律按「必须满 3000」卡，这些正常章会被整本拦下——作者反而什么都导不出来。
+ * 取 90%：真正写残的短章（1293 字那种）照样拦得住，只差几十字的正常章不再误伤。
+ */
+const LEGACY_WORD_FLOOR_RATIO = 0.9
+
 /**
  * 导出时永远以目录 sortNo 重建章号。
  *
@@ -371,15 +381,21 @@ export const assertLocalTxtExportReady = (
     const body = sanitizeChapterText(chapter.textContent || '')
     const words = countWords(body)
     const managed = Boolean(options.workflowBook || isWorkflowChapter(chapter))
-    const targetWords = Math.max(1, Number(chapter.planMeta?.workflowTargetWords || 3000))
+    // 逐章目标只有写书器写过的章才有；存量章一律按兜底目标 + 90% 下限判定，
+    // 新写的章仍严格按自己的目标卡，两边口径不同是有意为之。
+    const stampedTarget = Number(chapter.planMeta?.workflowTargetWords || 0)
+    const targetWords = stampedTarget > 0 ? stampedTarget : LEGACY_EXPORT_TARGET_WORDS
+    const minimumWords = stampedTarget > 0
+      ? stampedTarget
+      : Math.round(LEGACY_EXPORT_TARGET_WORDS * LEGACY_WORD_FLOOR_RATIO)
     const maximumWords = targetWords + 500
 
     if (chapter.workflowStatus === 'incomplete' || chapter.workflowStatus === 'review_required') {
       failures.push(`第${chapterNo}章仍是${chapter.workflowStatus === 'incomplete' ? '断点章' : '待修复章'}`)
       continue
     }
-    if (managed && words < targetWords) {
-      failures.push(`第${chapterNo}章仅 ${words} 字，未达到 ${targetWords} 字`)
+    if (managed && words < minimumWords) {
+      failures.push(`第${chapterNo}章仅 ${words} 字，未达到 ${minimumWords} 字（本章目标 ${targetWords} 字）`)
       continue
     }
     if (managed && words > maximumWords) {
