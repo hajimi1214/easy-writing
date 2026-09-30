@@ -92,12 +92,28 @@ function forward(req, res, reqBody, attempt) {
       activeProxyResponse = proxyRes
       // 记录上游响应：状态码 + 字节数 + 请求类型，用于排查空响应体
       let bytes = 0
-      proxyRes.on('data', (chunk) => { bytes += chunk.length })
+      // 4xx/5xx 的响应体是「为什么失败」的唯一线索：400 常见于参数不合法、上下文超限、
+      // 模型名不可用。此前只记了状态码和字节数（133B），回头看日志根本推不出原因。
+      // 只留前 2048 字节（错误体通常 ~130B），正常 200 的 SSE 流完全不受影响。
+      const isUpstreamError = proxyRes.statusCode >= 400
+      const errorChunks = []
+      let errorBytes = 0
+      proxyRes.on('data', (chunk) => {
+        bytes += chunk.length
+        if (isUpstreamError && errorBytes < 2048) {
+          errorChunks.push(chunk)
+          errorBytes += chunk.length
+        }
+      })
       proxyRes.on('end', () => {
         clearTotalTimer()
         const ts = new Date().toISOString()
         const ctype = String(proxyRes.headers['content-type'] || '').split(';')[0]
         console.log(`[proxy] ${ts} ${req.method} ${req.url} [${req._streamFlag}] ${req._modelName} -> ${proxyRes.statusCode} ${bytes}B ct=${ctype}`)
+        if (errorChunks.length) {
+          const snippet = Buffer.concat(errorChunks).toString('utf8').replace(/\s+/g, ' ').slice(0, 400)
+          console.log(`[proxy] ${ts} 上游错误体 -> ${snippet}`)
+        }
       })
       const headers = { ...proxyRes.headers }
       // 去掉上游禁止跨域读取的头，换成允许
